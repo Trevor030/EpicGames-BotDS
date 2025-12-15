@@ -1,15 +1,19 @@
 const EPIC_URL =
   "https://store-site-backend-static.ak.epicgames.com/freeGamesPromotions?locale=it&country=IT&allowCountries=IT";
 
-function isActuallyFree(el) {
-  const price = el?.price?.totalPrice;
-  if (!price) return false;
+function isFreeNowByPrice(el) {
+  const tp = el?.price?.totalPrice;
+  if (!tp) return false;
 
-  const discountPrice = price.discountPrice; // centesimi
-  const originalPrice = price.originalPrice; // centesimi
+  // In questo feed, quando è gratis spesso discountPrice è 0 (in centesimi)
+  return tp.discountPrice === 0;
+}
 
-  // Gratis in promo = scontato a 0 ma non già free-to-play permanente
-  return discountPrice === 0 && originalPrice > 0;
+function isGameLike(el) {
+  // Evita cosmetici, DLC ecc. Puntiamo ai giochi base.
+  // Di solito i giochi sono BASE_GAME.
+  const offerType = el?.offerType;
+  return offerType === "BASE_GAME";
 }
 
 function normalize(el, start, end) {
@@ -42,11 +46,15 @@ export async function fetchEpicGames() {
   const upcoming = [];
 
   for (const el of elements) {
-    if (!el?.promotions) continue;
-    if (!isActuallyFree(el)) continue; // <-- filtro chiave
+    const promos = el?.promotions;
+    if (!promos) continue;
+
+    // Filtri “buoni”: gratis e gioco base
+    if (!isFreeNowByPrice(el)) continue;
+    if (!isGameLike(el)) continue;
 
     // promo attive
-    for (const p of el.promotions.promotionalOffers || []) {
+    for (const p of promos.promotionalOffers || []) {
       for (const o of p.promotionalOffers || []) {
         const s = new Date(o.startDate);
         const e = new Date(o.endDate);
@@ -55,7 +63,7 @@ export async function fetchEpicGames() {
     }
 
     // promo future
-    for (const p of el.promotions.upcomingPromotionalOffers || []) {
+    for (const p of promos.upcomingPromotionalOffers || []) {
       for (const o of p.promotionalOffers || []) {
         const s = new Date(o.startDate);
         const e = new Date(o.endDate);
