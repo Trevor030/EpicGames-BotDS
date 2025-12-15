@@ -12,10 +12,10 @@ if (!TOKEN || !CHANNEL_ID) {
 
 let lastHash = "";
 
-function hashGames(c, u) {
-  return JSON.stringify(
-    [...c.map(g => g.title), ...u.map(g => g.title)]
-  );
+function hashGames(current, upcoming) {
+  const c = current.map(g => `${g.title}|${g.end.toISOString()}`).join(";");
+  const u = upcoming.map(g => `${g.title}|${g.start.toISOString()}`).join(";");
+  return `${c}||${u}`;
 }
 
 async function postEpic(client, force = false) {
@@ -47,19 +47,31 @@ const client = new Client({
 
 client.once("clientReady", async () => {
   console.log(`🤖 Loggato come ${client.user.tag}`);
-  await postEpic(client, true);
 
+  // Primo post forzato all’avvio
+  try {
+    await postEpic(client, true);
+  } catch (e) {
+    console.error("Post iniziale fallito:", e);
+  }
+
+  // Loop
   setInterval(() => {
-    postEpic(client).catch(console.error);
+    postEpic(client, false).catch(console.error);
   }, CHECK_MIN * 60_000);
 });
 
-client.on("messageCreate", async msg => {
+client.on("messageCreate", async (msg) => {
   if (msg.author.bot) return;
   if (msg.content.trim() !== "!epic") return;
 
-  await postEpic(client, true);
-  await msg.reply("✅ Aggiornamento Epic inviato!");
+  try {
+    await postEpic(client, true);
+    await msg.reply("✅ Aggiornamento Epic inviato!");
+  } catch (e) {
+    console.error(e);
+    await msg.reply("❌ Errore durante l’aggiornamento Epic.");
+  }
 });
 
 client.login(TOKEN);
