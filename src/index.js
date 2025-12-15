@@ -45,7 +45,7 @@ const client = new Client({
   ]
 });
 
-client.once("ready", async () => {
+client.once("clientReady", async () => {
   console.log(`🤖 Loggato come ${client.user.tag}`);
   await postEpic(client, true);
 
