@@ -1,5 +1,4 @@
-function fmtRome(dt) {
-  // Europe/Rome
+function fmt(dt) {
   return new Intl.DateTimeFormat("it-IT", {
     timeZone: "Europe/Rome",
     day: "2-digit",
@@ -9,22 +8,16 @@ function fmtRome(dt) {
   }).format(dt);
 }
 
-export function linesCurrent(games) {
-  if (!games.length) return "Niente da segnalare 👀";
+export function currentText(games) {
+  if (!games.length) return "Nessun gioco gratuito al momento 👀";
   return games
-    .map((g) => `• **[${g.title}](${g.url})** — gratis fino a **${fmtRome(g.end)}**`)
+    .map(g => `• **[${g.title}](${g.url})** — fino al **${fmt(g.end)}**`)
     .join("\n");
 }
 
-export function linesUpcoming(games) {
-  if (!games.length) return "Epic non ha ancora pubblicato i prossimi 👀";
+export function upcomingText(games) {
+  if (!games.length) return "Epic non ha ancora annunciato i prossimi 🎁";
   return games
-    .map((g) => `• **[${g.title}](${g.url})** — dal **${fmtRome(g.start)}** al **${fmtRome(g.end)}**`)
+    .map(g => `• **[${g.title}](${g.url})** — dal **${fmt(g.start)}**`)
     .join("\n");
-}
-
-export function makeFingerprint(current, upcoming) {
-  const c = current.map((g) => `${g.title}|${g.url}|${g.end.toISOString()}`).join(";");
-  const u = upcoming.slice(0, 5).map((g) => `${g.title}|${g.url}|${g.start.toISOString()}`).join(";");
-  return `${c}||${u}`;
 }
