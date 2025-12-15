@@ -1,74 +1,65 @@
-import "dotenv/config";
-import fs from "node:fs";
-import path from "node:path";
 import { Client, GatewayIntentBits, EmbedBuilder } from "discord.js";
-import { fetchFreeGames } from "./epic.js";
-import { linesCurrent, linesUpcoming, makeFingerprint } from "./format.js";
+import { fetchEpicGames } from "./epic.js";
+import { currentText, upcomingText } from "./format.js";
 
-const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
+const TOKEN = process.env.DISCORD_TOKEN;
 const CHANNEL_ID = process.env.DISCORD_CHANNEL_ID;
-const CHECK_EVERY_MIN = Number(process.env.CHECK_EVERY_MIN || 60);
-const STATE_PATH = process.env.STATE_PATH || "/data/state.json";
-const UPCOMING_LIMIT = Number(process.env.UPCOMING_LIMIT || 5);
+const CHECK_MIN = Number(process.env.CHECK_EVERY_MIN || 60);
 
-if (!DISCORD_TOKEN) throw new Error("Missing DISCORD_TOKEN");
-if (!CHANNEL_ID) throw new Error("Missing DISCORD_CHANNEL_ID");
-
-function loadState() {
-  try {
-    return JSON.parse(fs.readFileSync(STATE_PATH, "utf-8"));
-  } catch {
-    return { lastFingerprint: "" };
-  }
+if (!TOKEN || !CHANNEL_ID) {
+  throw new Error("DISCORD_TOKEN o DISCORD_CHANNEL_ID mancanti");
 }
 
-function saveState(state) {
-  fs.mkdirSync(path.dirname(STATE_PATH), { recursive: true });
-  fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2), "utf-8");
+let lastHash = "";
+
+function hashGames(c, u) {
+  return JSON.stringify(
+    [...c.map(g => g.title), ...u.map(g => g.title)]
+  );
 }
 
-async function postUpdate(client, force = false) {
+async function postEpic(client, force = false) {
   const channel = await client.channels.fetch(CHANNEL_ID);
+  const { current, upcoming } = await fetchEpicGames();
 
-  const { current, upcoming } = await fetchFreeGames();
-  const fp = makeFingerprint(current, upcoming);
+  const hash = hashGames(current, upcoming);
+  if (!force && hash === lastHash) return;
+  lastHash = hash;
 
-  const state = loadState();
-  if (!force && state.lastFingerprint === fp) return;
-
-  const emb = new EmbedBuilder()
-    .setTitle("🎁 Epic Games – Giochi gratis")
-    .setDescription("Aggiornamento automatico delle promo gratuite (orario Europe/Rome).")
+  const embed = new EmbedBuilder()
+    .setTitle("🎁 Epic Games – Giochi Gratis")
     .addFields(
-      { name: "✅ Disponibili ora", value: linesCurrent(current), inline: false },
-      { name: "⏭️ Prossimi (se disponibili)", value: linesUpcoming(upcoming.slice(0, UPCOMING_LIMIT)), inline: false }
+      { name: "✅ Disponibili ora", value: currentText(current), inline: false },
+      { name: "⏭️ Prossimi", value: upcomingText(upcoming), inline: false }
     )
-    .setFooter({ text: "Fonte: Epic Games Store promotions feed" });
+    .setFooter({ text: "Aggiornamento automatico Epic Games Store" });
 
-  await channel.send({ embeds: [emb] });
-
-  state.lastFingerprint = fp;
-  saveState(state);
+  await channel.send({ embeds: [embed] });
 }
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent
+  ]
+});
 
 client.once("ready", async () => {
-  console.log(`Logged in as ${client.user.tag}`);
-  // post iniziale solo se cambia qualcosa
-  await postUpdate(client, false);
+  console.log(`🤖 Loggato come ${client.user.tag}`);
+  await postEpic(client, true);
 
-  setInterval(async () => {
-    try {
-      await postUpdate(client, false);
-    } catch (e) {
-      console.error("Update failed:", e);
-    }
-  }, CHECK_EVERY_MIN * 60_000);
+  setInterval(() => {
+    postEpic(client).catch(console.error);
+  }, CHECK_MIN * 60_000);
 });
 
-client.on("interactionCreate", async (interaction) => {
-  // se in futuro vuoi slash command: /epic
+client.on("messageCreate", async msg => {
+  if (msg.author.bot) return;
+  if (msg.content.trim() !== "!epic") return;
+
+  await postEpic(client, true);
+  await msg.reply("✅ Aggiornamento Epic inviato!");
 });
 
-client.login(DISCORD_TOKEN);
+client.login(TOKEN);
