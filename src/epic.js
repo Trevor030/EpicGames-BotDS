@@ -1,13 +1,6 @@
 const EPIC_URL =
   "https://store-site-backend-static.ak.epicgames.com/freeGamesPromotions?locale=it&country=IT&allowCountries=IT";
 
-function isProbablyAGame(el) {
-  // BASE_GAME è la cosa migliore; però a volte Epic non la mette come ti aspetti.
-  // Quindi: se è BASE_GAME ok, altrimenti accettiamo anche quando offerType manca.
-  const t = el?.offerType;
-  return !t || t === "BASE_GAME";
-}
-
 function normalize(el, start, end) {
   const slug = el.productSlug || el.urlSlug || "";
   return {
@@ -21,9 +14,9 @@ function normalize(el, start, end) {
 }
 
 function uniqByTitle(list) {
-  const m = new Map();
-  for (const g of list) m.set(g.title, g);
-  return [...m.values()];
+  const map = new Map();
+  for (const g of list) map.set(g.title, g);
+  return [...map.values()];
 }
 
 export async function fetchEpicGames() {
@@ -40,23 +33,31 @@ export async function fetchEpicGames() {
   for (const el of elements) {
     const promos = el?.promotions;
     if (!promos) continue;
-    if (!isProbablyAGame(el)) continue;
 
-    // ATTIVE
-    for (const p of promos.promotionalOffers || []) {
-      for (const o of p.promotionalOffers || []) {
-        const s = new Date(o.startDate);
-        const e = new Date(o.endDate);
-        if (s <= now && now < e) current.push(normalize(el, s, e));
+    // ✅ GIOCHI GRATIS ATTUALI
+    for (const bucket of promos.promotionalOffers || []) {
+      for (const offer of bucket.promotionalOffers || []) {
+        const s = new Date(offer.startDate);
+        const e = new Date(offer.endDate);
+
+        // 🔑 FLAG UFFICIALE EPIC
+        if (offer.discountSetting?.discountType !== "FREE") continue;
+        if (s <= now && now < e) {
+          current.push(normalize(el, s, e));
+        }
       }
     }
 
-    // PROSSIME
-    for (const p of promos.upcomingPromotionalOffers || []) {
-      for (const o of p.promotionalOffers || []) {
-        const s = new Date(o.startDate);
-        const e = new Date(o.endDate);
-        if (s > now) upcoming.push(normalize(el, s, e));
+    // ⏭️ PROSSIMI GIOCHI GRATIS
+    for (const bucket of promos.upcomingPromotionalOffers || []) {
+      for (const offer of bucket.promotionalOffers || []) {
+        const s = new Date(offer.startDate);
+        const e = new Date(offer.endDate);
+
+        if (offer.discountSetting?.discountType !== "FREE") continue;
+        if (s > now) {
+          upcoming.push(normalize(el, s, e));
+        }
       }
     }
   }
