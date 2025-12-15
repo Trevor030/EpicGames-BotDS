@@ -1,50 +1,45 @@
 const EPIC_URL =
   "https://store-site-backend-static.ak.epicgames.com/freeGamesPromotions?locale=it&country=IT&allowCountries=IT";
 
-function normalize(el, start, end) {
+function isMysteryTitle(title) {
+  return /^mystery game\b/i.test(title || "");
+}
+
+function normalize(el, start, end, isMystery = false) {
   const slug = el.productSlug || el.urlSlug || "";
   return {
-    title: el.title || "Senza titolo",
+    title: isMystery ? "🎁 Gioco misterioso" : (el.title || "Senza titolo"),
     start,
     end,
     url: slug
       ? `https://store.epicgames.com/it/p/${slug}`
-      : "https://store.epicgames.com/it/free-games",
-    // campi utili per debug/filtri
-    offerType: el.offerType,
-    discountPrice: el?.price?.totalPrice?.discountPrice,
-    originalPrice: el?.price?.totalPrice?.originalPrice
+      : "https://store.epicgames.com/it/free-games"
   };
 }
 
 function uniqByUrl(list) {
   const m = new Map();
-  for (const g of list) m.set(g.url, g);
+  for (const g of list) m.set(g.url + g.title, g);
   return [...m.values()];
 }
 
-// Heuristica robusta: promo "free-claim" quando almeno UNO di questi segnali è vero
 function isFreeClaim(el, offer) {
+  const tp = el?.price?.totalPrice;
+  const dp = tp?.discountPrice;
+  if (typeof dp !== "number" || dp !== 0) return false;
+
   const ds = offer?.discountSetting;
+  if (!ds) return false;
 
-  // segnale 1: Epic sometimes marca chiaramente FREE
-  if (ds?.discountType === "FREE") return true;
-
-  // segnale 2: percentuale (in alcuni feed è 100, in altri 0)
-  if (typeof ds?.discountPercentage === "number") {
-    if (ds.discountPercentage === 100 || ds.discountPercentage === 0) return true;
-  }
-
-  // segnale 3: prezzo scontato 0 nel blocco price (quando affidabile)
-  const dp = el?.price?.totalPrice?.discountPrice;
-  if (typeof dp === "number" && dp === 0) return true;
+  if (ds.discountType === "FREE") return true;
+  if (typeof ds.discountPercentage === "number" && ds.discountPercentage === 0) return true;
 
   return false;
 }
 
-export async function fetchEpicFreePromos({ debug = false } = {}) {
+export async function fetchEpicFreePromos() {
   const res = await fetch(EPIC_URL);
-  if (!res.ok) throw new Error(`Epic fetch failed: ${res.status} ${res.statusText}`);
+  if (!res.ok) throw new Error(`Epic fetch failed: ${res.status}`);
 
   const data = await res.json();
   const elements = data?.data?.Catalog?.searchStore?.elements ?? [];
@@ -53,73 +48,39 @@ export async function fetchEpicFreePromos({ debug = false } = {}) {
   const current = [];
   const upcoming = [];
 
-  // debug: raccogliamo qualche info utile
-  const debugSamples = [];
-
   for (const el of elements) {
     const promos = el?.promotions;
     if (!promos) continue;
 
-    // Promo attive
+    // DISPONIBILI ORA (mai mystery)
     for (const bucket of promos.promotionalOffers || []) {
       for (const offer of bucket.promotionalOffers || []) {
         const s = new Date(offer.startDate);
         const e = new Date(offer.endDate);
         if (!(s <= now && now < e)) continue;
+        if (!isFreeClaim(el, offer)) continue;
+        if (isMysteryTitle(el.title)) continue;
 
-        const free = isFreeClaim(el, offer);
-        if (debug && debugSamples.length < 10) {
-          debugSamples.push({
-            title: el.title,
-            offerType: el.offerType,
-            start: offer.startDate,
-            end: offer.endDate,
-            discountType: offer?.discountSetting?.discountType,
-            discountPct: offer?.discountSetting?.discountPercentage,
-            discountPrice: el?.price?.totalPrice?.discountPrice,
-            originalPrice: el?.price?.totalPrice?.originalPrice,
-            freeDetected: free
-          });
-        }
-
-        if (!free) continue;
-        current.push(normalize(el, s, e));
+        current.push(normalize(el, s, e, false));
       }
     }
 
-    // Promo future
+    // PROSSIMI (mystery ammesso ma “rinominato”)
     for (const bucket of promos.upcomingPromotionalOffers || []) {
       for (const offer of bucket.promotionalOffers || []) {
         const s = new Date(offer.startDate);
         const e = new Date(offer.endDate);
         if (!(s > now)) continue;
+        if (!isFreeClaim(el, offer)) continue;
 
-        const free = isFreeClaim(el, offer);
-        if (debug && debugSamples.length < 10) {
-          debugSamples.push({
-            title: el.title,
-            offerType: el.offerType,
-            start: offer.startDate,
-            end: offer.endDate,
-            discountType: offer?.discountSetting?.discountType,
-            discountPct: offer?.discountSetting?.discountPercentage,
-            discountPrice: el?.price?.totalPrice?.discountPrice,
-            originalPrice: el?.price?.totalPrice?.originalPrice,
-            freeDetected: free
-          });
-        }
-
-        if (!free) continue;
-        upcoming.push(normalize(el, s, e));
+        const mystery = isMysteryTitle(el.title);
+        upcoming.push(normalize(el, s, e, mystery));
       }
     }
   }
 
-  const out = {
+  return {
     current: uniqByUrl(current).sort((a, b) => a.end - b.end),
     upcoming: uniqByUrl(upcoming).sort((a, b) => a.start - b.start)
   };
-
-  if (debug) out.debugSamples = debugSamples;
-  return out;
 }
