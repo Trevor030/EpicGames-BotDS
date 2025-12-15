@@ -1,14 +1,12 @@
 import { Client, GatewayIntentBits, EmbedBuilder } from "discord.js";
-import { fetchEpicGames } from "./epic.js";
+import { fetchEpicFreePromos } from "./epic.js";
 import { currentText, upcomingText } from "./format.js";
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const CHANNEL_ID = process.env.DISCORD_CHANNEL_ID;
 const CHECK_MIN = Number(process.env.CHECK_EVERY_MIN || 60);
 
-if (!TOKEN || !CHANNEL_ID) {
-  throw new Error("DISCORD_TOKEN o DISCORD_CHANNEL_ID mancanti");
-}
+if (!TOKEN || !CHANNEL_ID) throw new Error("DISCORD_TOKEN o DISCORD_CHANNEL_ID mancanti");
 
 let lastHash = "";
 
@@ -20,7 +18,7 @@ function hashGames(current, upcoming) {
 
 async function postEpic(client, force = false) {
   const channel = await client.channels.fetch(CHANNEL_ID);
-  const { current, upcoming } = await fetchEpicGames();
+  const { current, upcoming } = await fetchEpicFreePromos({ maxChecks: 25 });
 
   const hash = hashGames(current, upcoming);
   if (!force && hash === lastHash) return;
@@ -32,7 +30,7 @@ async function postEpic(client, force = false) {
       { name: "✅ Disponibili ora", value: currentText(current), inline: false },
       { name: "⏭️ Prossimi", value: upcomingText(upcoming), inline: false }
     )
-    .setFooter({ text: "Aggiornamento automatico Epic Games Store" });
+    .setFooter({ text: "Promo FREE (100% off) verificate" });
 
   await channel.send({ embeds: [embed] });
 }
@@ -47,18 +45,13 @@ const client = new Client({
 
 client.once("clientReady", async () => {
   console.log(`🤖 Loggato come ${client.user.tag}`);
-
-  // Primo post forzato all’avvio
   try {
     await postEpic(client, true);
   } catch (e) {
     console.error("Post iniziale fallito:", e);
   }
 
-  // Loop
-  setInterval(() => {
-    postEpic(client, false).catch(console.error);
-  }, CHECK_MIN * 60_000);
+  setInterval(() => postEpic(client, false).catch(console.error), CHECK_MIN * 60_000);
 });
 
 client.on("messageCreate", async (msg) => {
