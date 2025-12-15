@@ -1,0 +1,12 @@
+services:
+  epic-discord-bot:
+    build: .
+    container_name: epic-discord-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - epicbot_data:/data
+
+volumes:
+  epicbot_data:
