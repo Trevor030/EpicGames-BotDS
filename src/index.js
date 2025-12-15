@@ -18,7 +18,7 @@ function hashGames(current, upcoming) {
 
 async function postEpic(client, force = false) {
   const channel = await client.channels.fetch(CHANNEL_ID);
-  const { current, upcoming } = await fetchEpicFreePromos({ maxChecks: 25 });
+  const { current, upcoming } = await fetchEpicFreePromos({ debug: false });
 
   const hash = hashGames(current, upcoming);
   if (!force && hash === lastHash) return;
@@ -30,7 +30,7 @@ async function postEpic(client, force = false) {
       { name: "✅ Disponibili ora", value: currentText(current), inline: false },
       { name: "⏭️ Prossimi", value: upcomingText(upcoming), inline: false }
     )
-    .setFooter({ text: "Promo FREE (100% off) verificate" });
+    .setFooter({ text: "Promo FREE (free-claim) via feed Epic" });
 
   await channel.send({ embeds: [embed] });
 }
@@ -45,6 +45,7 @@ const client = new Client({
 
 client.once("clientReady", async () => {
   console.log(`🤖 Loggato come ${client.user.tag}`);
+
   try {
     await postEpic(client, true);
   } catch (e) {
@@ -56,14 +57,37 @@ client.once("clientReady", async () => {
 
 client.on("messageCreate", async (msg) => {
   if (msg.author.bot) return;
-  if (msg.content.trim() !== "!epic") return;
 
-  try {
-    await postEpic(client, true);
-    await msg.reply("✅ Aggiornamento Epic inviato!");
-  } catch (e) {
-    console.error(e);
-    await msg.reply("❌ Errore durante l’aggiornamento Epic.");
+  const cmd = msg.content.trim();
+
+  if (cmd === "!epic") {
+    try {
+      await postEpic(client, true);
+      await msg.reply("✅ Aggiornamento Epic inviato!");
+    } catch (e) {
+      console.error(e);
+      await msg.reply("❌ Errore durante l’aggiornamento Epic.");
+    }
+    return;
+  }
+
+  if (cmd === "!epicdebug") {
+    try {
+      const { debugSamples, current, upcoming } = await fetchEpicFreePromos({ debug: true });
+
+      const lines = (debugSamples || []).map(s =>
+        `• ${s.title} | free=${s.freeDetected} | type=${s.discountType ?? "-"} pct=${s.discountPct ?? "-"} | dp=${s.discountPrice ?? "-"} op=${s.originalPrice ?? "-"}`
+      );
+
+      await msg.reply(
+        "🧪 **EPIC DEBUG (top 10 promo viste)**\n" +
+        (lines.length ? lines.join("\n") : "(nessun sample)") +
+        `\n\nCurrent found: ${current.length} | Upcoming found: ${upcoming.length}`
+      );
+    } catch (e) {
+      console.error(e);
+      await msg.reply("❌ Debug fallito (vedi log container).");
+    }
   }
 });
 
