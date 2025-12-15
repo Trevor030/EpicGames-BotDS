@@ -1,10 +1,21 @@
 const EPIC_URL =
   "https://store-site-backend-static.ak.epicgames.com/freeGamesPromotions?locale=it&country=IT&allowCountries=IT";
 
+function isActuallyFree(el) {
+  const price = el?.price?.totalPrice;
+  if (!price) return false;
+
+  const discountPrice = price.discountPrice; // centesimi
+  const originalPrice = price.originalPrice; // centesimi
+
+  // Gratis in promo = scontato a 0 ma non già free-to-play permanente
+  return discountPrice === 0 && originalPrice > 0;
+}
+
 function normalize(el, start, end) {
   const slug = el.productSlug || el.urlSlug || "";
   return {
-    title: el.title,
+    title: el.title || "Senza titolo",
     start,
     end,
     url: slug
@@ -13,22 +24,29 @@ function normalize(el, start, end) {
   };
 }
 
+function uniqByTitle(list) {
+  const m = new Map();
+  for (const g of list) m.set(g.title, g);
+  return [...m.values()];
+}
+
 export async function fetchEpicGames() {
   const res = await fetch(EPIC_URL);
-  if (!res.ok) throw new Error("Epic fetch failed");
+  if (!res.ok) throw new Error(`Epic fetch failed: ${res.status}`);
 
   const data = await res.json();
-  const elements = data.data.Catalog.searchStore.elements;
+  const elements = data?.data?.Catalog?.searchStore?.elements ?? [];
   const now = new Date();
 
   const current = [];
   const upcoming = [];
 
   for (const el of elements) {
-    const promos = el.promotions;
-    if (!promos) continue;
+    if (!el?.promotions) continue;
+    if (!isActuallyFree(el)) continue; // <-- filtro chiave
 
-    for (const p of promos.promotionalOffers || []) {
+    // promo attive
+    for (const p of el.promotions.promotionalOffers || []) {
       for (const o of p.promotionalOffers || []) {
         const s = new Date(o.startDate);
         const e = new Date(o.endDate);
@@ -36,7 +54,8 @@ export async function fetchEpicGames() {
       }
     }
 
-    for (const p of promos.upcomingPromotionalOffers || []) {
+    // promo future
+    for (const p of el.promotions.upcomingPromotionalOffers || []) {
       for (const o of p.promotionalOffers || []) {
         const s = new Date(o.startDate);
         const e = new Date(o.endDate);
@@ -46,7 +65,7 @@ export async function fetchEpicGames() {
   }
 
   return {
-    current: [...new Map(current.map(g => [g.title, g])).values()],
-    upcoming: [...new Map(upcoming.map(g => [g.title, g])).values()]
+    current: uniqByTitle(current).sort((a, b) => a.end - b.end),
+    upcoming: uniqByTitle(upcoming).sort((a, b) => a.start - b.start)
   };
 }
