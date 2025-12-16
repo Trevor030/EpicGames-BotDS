@@ -17,9 +17,10 @@ export function loadState() {
     return {
       lastHash: typeof s.lastHash === "string" ? s.lastHash : "",
       lastChangeAt: typeof s.lastChangeAt === "string" ? s.lastChangeAt : null,
+      messageId: typeof s.messageId === "string" ? s.messageId : null,
     };
   } catch {
-    return { lastHash: "", lastChangeAt: null };
+    return { lastHash: "", lastChangeAt: null, messageId: null };
   }
 }
 
@@ -28,6 +29,7 @@ export function saveState(state) {
   const payload = {
     lastHash: state.lastHash || "",
     lastChangeAt: state.lastChangeAt || new Date().toISOString(),
+    messageId: state.messageId || null,
   };
   fs.writeFileSync(STATE_PATH, JSON.stringify(payload, null, 2), "utf-8");
 }
