@@ -1,3 +1,4 @@
+// epic.js
 const EPIC_URL =
   "https://store-site-backend-static.ak.epicgames.com/freeGamesPromotions?locale=it&country=IT&allowCountries=IT";
 
@@ -13,7 +14,7 @@ function normalize(el, start, end, isMystery = false) {
     end,
     url: slug
       ? `https://store.epicgames.com/it/p/${slug}`
-      : "https://store.epicgames.com/it/free-games"
+      : "https://store.epicgames.com/it/free-games",
   };
 }
 
@@ -37,7 +38,7 @@ function isFreeClaim(el, offer) {
   return false;
 }
 
-export async function fetchEpicFreePromos() {
+export async function fetchEpicFreePromos({ debug = false } = {}) {
   const res = await fetch(EPIC_URL);
   if (!res.ok) throw new Error(`Epic fetch failed: ${res.status}`);
 
@@ -47,6 +48,7 @@ export async function fetchEpicFreePromos() {
 
   const current = [];
   const upcoming = [];
+  const debugSamples = [];
 
   for (const el of elements) {
     const promos = el?.promotions;
@@ -57,8 +59,22 @@ export async function fetchEpicFreePromos() {
       for (const offer of bucket.promotionalOffers || []) {
         const s = new Date(offer.startDate);
         const e = new Date(offer.endDate);
+        const free = isFreeClaim(el, offer);
+
+        if (debug && debugSamples.length < 10) {
+          const tp = el?.price?.totalPrice || {};
+          debugSamples.push({
+            title: el?.title,
+            freeDetected: free,
+            discountType: offer?.discountSetting?.discountType,
+            discountPct: offer?.discountSetting?.discountPercentage,
+            discountPrice: tp?.discountPrice,
+            originalPrice: tp?.originalPrice,
+          });
+        }
+
         if (!(s <= now && now < e)) continue;
-        if (!isFreeClaim(el, offer)) continue;
+        if (!free) continue;
         if (isMysteryTitle(el.title)) continue;
 
         current.push(normalize(el, s, e, false));
@@ -70,8 +86,22 @@ export async function fetchEpicFreePromos() {
       for (const offer of bucket.promotionalOffers || []) {
         const s = new Date(offer.startDate);
         const e = new Date(offer.endDate);
+        const free = isFreeClaim(el, offer);
+
+        if (debug && debugSamples.length < 10) {
+          const tp = el?.price?.totalPrice || {};
+          debugSamples.push({
+            title: el?.title,
+            freeDetected: free,
+            discountType: offer?.discountSetting?.discountType,
+            discountPct: offer?.discountSetting?.discountPercentage,
+            discountPrice: tp?.discountPrice,
+            originalPrice: tp?.originalPrice,
+          });
+        }
+
         if (!(s > now)) continue;
-        if (!isFreeClaim(el, offer)) continue;
+        if (!free) continue;
 
         const mystery = isMysteryTitle(el.title);
         upcoming.push(normalize(el, s, e, mystery));
@@ -79,8 +109,11 @@ export async function fetchEpicFreePromos() {
     }
   }
 
-  return {
+  const out = {
     current: uniqByUrl(current).sort((a, b) => a.end - b.end),
-    upcoming: uniqByUrl(upcoming).sort((a, b) => a.start - b.start)
+    upcoming: uniqByUrl(upcoming).sort((a, b) => a.start - b.start),
   };
+
+  if (debug) out.debugSamples = debugSamples;
+  return out;
 }
