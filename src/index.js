@@ -1,6 +1,6 @@
 import { Client, GatewayIntentBits, EmbedBuilder } from "discord.js";
 import { fetchEpicFreePromos } from "./epic.js";
-import { fetchSteamFreeGames } from "./steam.js";
+import { fetchSteamDeals } from "./steam.js";
 import { currentText, upcomingText } from "./format.js";
 import { loadState, saveState } from "./state.js";
 import { appendHistory } from "./history.js";
@@ -24,14 +24,19 @@ function stableKey(g) {
     g.url || "",
     g.start instanceof Date ? g.start.toISOString() : String(g.start || ""),
     g.end instanceof Date ? g.end.toISOString() : String(g.end || ""),
+    // Steam extra
+    String(g.discountPercent ?? ""),
+    String(g.originalCents ?? ""),
+    String(g.finalCents ?? ""),
+    String(g.currency ?? ""),
   ].join("|");
 }
 
-function hashAll({ epicCurrent, epicUpcoming, steamCurrent }) {
+function hashAll({ epicCurrent, epicUpcoming, steamDeals }) {
   const eC = [...epicCurrent].map(stableKey).sort().join(";");
   const eU = [...epicUpcoming].map(stableKey).sort().join(";");
-  const sC = [...steamCurrent].map(stableKey).sort().join(";");
-  return `EPIC:${eC}||EPIC_UP:${eU}||STEAM:${sC}`;
+  const sD = [...steamDeals].map(stableKey).sort().join(";");
+  return `EPIC:${eC}||EPIC_UP:${eU}||STEAM_DEALS:${sD}`;
 }
 
 function safeField(text, fallback = "—") {
@@ -39,35 +44,48 @@ function safeField(text, fallback = "—") {
   return text.length > 1024 ? text.slice(0, 1021) + "…" : text;
 }
 
-function steamText(games) {
-  if (!games?.length) return "—";
-  const lines = games.slice(0, 10).map(g => {
-    const end = g.end
-      ? `\n⏳ Fine: <t:${Math.floor(g.end.getTime() / 1000)}:R>`
+function steamDealsText(deals) {
+  if (!deals?.length) return "—";
+
+  // limitiamo per non esplodere l’embed
+  const top = deals.slice(0, 10);
+
+  const lines = top.map(g => {
+    const pricePart =
+      g.originalPriceText && g.finalPriceText
+        ? `💸 ${g.originalPriceText} → **${g.finalPriceText}** (-${g.discountPercent}%)`
+        : `(-${g.discountPercent ?? "?"}%)`;
+
+    const endPart = g.end
+      ? `\n⏳ Scade: <t:${Math.floor(g.end.getTime() / 1000)}:R>`
       : "";
-    return `• ${g.title}\n${g.url}${end}`;
+
+    return `• **${g.title}**\n${pricePart}\n${g.url}${endPart}`;
   });
-  const extra = games.length > 10 ? `\n\n(+${games.length - 10} altri)` : "";
+
+  const extra = deals.length > 10 ? `\n\n(+${deals.length - 10} altri)` : "";
   return safeField(lines.join("\n\n") + extra);
 }
 
 async function buildEmbed() {
-  const [{ current: epicCurrent, upcoming: epicUpcoming }, steamCurrent] =
+  const [{ current: epicCurrent, upcoming: epicUpcoming }, steamDeals] =
     await Promise.all([
       fetchEpicFreePromos({ debug: false }),
-      fetchSteamFreeGames(),
+      fetchSteamDeals(),
     ]);
 
+  const minDisc = Number(process.env.MIN_STEAM_DISCOUNT || 90);
+
   const embed = new EmbedBuilder()
-    .setTitle("🎁 Giochi Gratis – Epic + Steam")
+    .setTitle("🎁 Giochi Gratis / Super Sconti – Epic + Steam")
     .addFields(
       { name: "✅ Epic – Disponibili ora", value: safeField(currentText(epicCurrent)), inline: false },
       { name: "⏭️ Epic – Prossimi", value: safeField(upcomingText(epicUpcoming)), inline: false },
-      { name: "🎮 Steam – Temporaneamente gratuiti", value: steamText(steamCurrent), inline: false }
+      { name: `🎮 Steam – Sconti ≥ ${minDisc}% (con prezzi)`, value: steamDealsText(steamDeals), inline: false }
     )
     .setFooter({ text: "Notifico solo quando cambia qualcosa (zero spam)" });
 
-  return { embed, epicCurrent, epicUpcoming, steamCurrent };
+  return { embed, epicCurrent, epicUpcoming, steamDeals };
 }
 
 /**
@@ -77,16 +95,15 @@ async function buildEmbed() {
  */
 async function postFreebies(client, force = false, where = "channel") {
   const channel = await client.channels.fetch(CHANNEL_ID);
-  const { embed, epicCurrent, epicUpcoming, steamCurrent } = await buildEmbed();
+  const { embed, epicCurrent, epicUpcoming, steamDeals } = await buildEmbed();
 
-  const hash = hashAll({ epicCurrent, epicUpcoming, steamCurrent });
+  const hash = hashAll({ epicCurrent, epicUpcoming, steamDeals });
 
   if (!force && hash === lastHash) return;
 
   lastHash = hash;
   saveState({ lastHash, lastChangeAt: new Date().toISOString() });
 
-  // Storico SOLO quando inviamo davvero un post (automatico o forzato)
   appendHistory({
     forced: !!force,
     epic: {
@@ -94,7 +111,14 @@ async function postFreebies(client, force = false, where = "channel") {
       upcoming: epicUpcoming.map(g => ({ title: g.title, url: g.url, start: g.start?.toISOString(), end: g.end?.toISOString() })),
     },
     steam: {
-      current: steamCurrent.map(g => ({ title: g.title, url: g.url, end: g.end?.toISOString?.() ?? null })),
+      deals: steamDeals.map(g => ({
+        title: g.title,
+        url: g.url,
+        discountPercent: g.discountPercent,
+        originalPrice: g.originalPriceText,
+        finalPrice: g.finalPriceText,
+        end: g.end?.toISOString?.() ?? null,
+      })),
     },
     where,
   });
@@ -113,8 +137,6 @@ const client = new Client({
 client.once("clientReady", async () => {
   console.log(`🤖 Loggato come ${client.user.tag}`);
 
-  // Se vuoi che al boot posti comunque (anche senza cambiamento):
-  // FORCE_ON_BOOT=true
   const FORCE_ON_BOOT = (process.env.FORCE_ON_BOOT || "false").toLowerCase() === "true";
 
   try {
@@ -131,8 +153,7 @@ client.on("messageCreate", async (msg) => {
 
   const cmd = msg.content.trim();
 
-  // ✅ COMANDO UNICO:
-  // mostra "quello che uscirebbe automatico", forzando il post (stesso embed)
+  // ✅ comando unico
   if (cmd === CMD_FREE) {
     try {
       await postFreebies(client, true, "command");
@@ -144,7 +165,7 @@ client.on("messageCreate", async (msg) => {
     return;
   }
 
-  // Il tuo debug Epic rimane disponibile
+  // debug Epic (come prima)
   if (cmd === "!epicdebug") {
     try {
       const { debugSamples, current, upcoming } = await fetchEpicFreePromos({ debug: true });
