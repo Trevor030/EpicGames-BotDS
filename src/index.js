@@ -92,7 +92,7 @@ async function buildPayload(reason) {
       },
       { name: "✅ Epic – Disponibili ora", value: safeField(currentText(epicCurrent)), inline: false },
       { name: "⏭️ Epic – Prossimi", value: safeField(upcomingText(epicUpcoming)), inline: false },
-      { name: `🎮 Steam – Sconti ≥ ${minDisc}% (con prezzi)`, value: steamDealsText(steamDeals), inline: false }
+      { name: `🎮 Steam – Sconti ≥ ${minDisc}%`, value: steamDealsText(steamDeals), inline: false }
     )
     .setFooter({ text: "Il messaggio precedente viene eliminato: resta sempre solo quello aggiornato." });
 
