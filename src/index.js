@@ -9,14 +9,13 @@ const TOKEN = process.env.DISCORD_TOKEN;
 const CHANNEL_ID = process.env.DISCORD_CHANNEL_ID;
 const CHECK_MIN = Number(process.env.CHECK_EVERY_MIN || 60);
 
-// Comando unico per vedere "quello che uscirebbe automatico"
 const CMD_FREE = process.env.CMD_FREE || "!free";
 
 if (!TOKEN || !CHANNEL_ID) throw new Error("DISCORD_TOKEN o DISCORD_CHANNEL_ID mancanti");
 
-// stato persistente
 const state = loadState();
 let lastHash = state.lastHash || "";
+let lastMessageId = state.messageId || null;
 
 function stableKey(g) {
   return [
@@ -24,7 +23,6 @@ function stableKey(g) {
     g.url || "",
     g.start instanceof Date ? g.start.toISOString() : String(g.start || ""),
     g.end instanceof Date ? g.end.toISOString() : String(g.end || ""),
-    // Steam extra
     String(g.discountPercent ?? ""),
     String(g.originalCents ?? ""),
     String(g.finalCents ?? ""),
@@ -47,7 +45,6 @@ function safeField(text, fallback = "—") {
 function steamDealsText(deals) {
   if (!deals?.length) return "—";
 
-  // limitiamo per non esplodere l’embed
   const top = deals.slice(0, 10);
 
   const lines = top.map(g => {
@@ -67,7 +64,10 @@ function steamDealsText(deals) {
   return safeField(lines.join("\n\n") + extra);
 }
 
-async function buildEmbed() {
+async function buildPayload(reason) {
+  const now = new Date();
+  const ts = Math.floor(now.getTime() / 1000);
+
   const [{ current: epicCurrent, upcoming: epicUpcoming }, steamDeals] =
     await Promise.all([
       fetchEpicFreePromos({ debug: false }),
@@ -76,36 +76,75 @@ async function buildEmbed() {
 
   const minDisc = Number(process.env.MIN_STEAM_DISCOUNT || 90);
 
+  // AVVISO BEN VISIBILE (testo del messaggio)
+  const content =
+    `🔔 **Aggiornamento rilevato** (${reason})\n` +
+    `🗓️ Pubblicato: <t:${ts}:F>  •  <t:${ts}:R>`;
+
+  // EMBED con data ben leggibile
   const embed = new EmbedBuilder()
     .setTitle("🎁 Giochi Gratis / Super Sconti – Epic + Steam")
     .addFields(
+      {
+        name: "🕒 Aggiornato",
+        value: `**<t:${ts}:F>**\n(<t:${ts}:R>)`,
+        inline: false,
+      },
       { name: "✅ Epic – Disponibili ora", value: safeField(currentText(epicCurrent)), inline: false },
       { name: "⏭️ Epic – Prossimi", value: safeField(upcomingText(epicUpcoming)), inline: false },
       { name: `🎮 Steam – Sconti ≥ ${minDisc}% (con prezzi)`, value: steamDealsText(steamDeals), inline: false }
     )
-    .setFooter({ text: "Notifico solo quando cambia qualcosa (zero spam)" });
+    .setFooter({ text: "Il messaggio precedente viene eliminato: resta sempre solo quello aggiornato." });
 
-  return { embed, epicCurrent, epicUpcoming, steamDeals };
+  return { content, embed, epicCurrent, epicUpcoming, steamDeals };
+}
+
+async function deletePreviousIfAny(channel) {
+  if (!lastMessageId) return;
+
+  try {
+    const oldMsg = await channel.messages.fetch(lastMessageId);
+    await oldMsg.delete();
+  } catch {
+    // se non esiste più / permessi / già cancellato: ignoriamo
+  } finally {
+    lastMessageId = null;
+  }
 }
 
 /**
- * Posta l'embed:
- * - force=false: solo se cambia rispetto all'ultimo hash salvato
- * - force=true: posta sempre (comando manuale o boot forzato)
+ * Pubblica aggiornamento:
+ * - se non cambia nulla e force=false => silenzio
+ * - se cambia (o force=true) => cancella il vecchio e manda il nuovo
  */
-async function postFreebies(client, force = false, where = "channel") {
+async function publishUpdated(client, force = false, reason = "auto") {
   const channel = await client.channels.fetch(CHANNEL_ID);
-  const { embed, epicCurrent, epicUpcoming, steamDeals } = await buildEmbed();
+
+  const { content, embed, epicCurrent, epicUpcoming, steamDeals } = await buildPayload(reason);
 
   const hash = hashAll({ epicCurrent, epicUpcoming, steamDeals });
 
   if (!force && hash === lastHash) return;
 
-  lastHash = hash;
-  saveState({ lastHash, lastChangeAt: new Date().toISOString() });
+  // c'è un update vero (o forzato): elimina il vecchio, poi manda il nuovo
+  await deletePreviousIfAny(channel);
 
+  const sent = await channel.send({ content, embeds: [embed] });
+
+  // aggiorna stato persistente
+  lastHash = hash;
+  lastMessageId = sent.id;
+
+  saveState({
+    lastHash,
+    lastChangeAt: new Date().toISOString(),
+    messageId: lastMessageId,
+  });
+
+  // storico SOLO quando pubblichiamo davvero
   appendHistory({
     forced: !!force,
+    reason,
     epic: {
       current: epicCurrent.map(g => ({ title: g.title, url: g.url, start: g.start?.toISOString(), end: g.end?.toISOString() })),
       upcoming: epicUpcoming.map(g => ({ title: g.title, url: g.url, start: g.start?.toISOString(), end: g.end?.toISOString() })),
@@ -120,10 +159,7 @@ async function postFreebies(client, force = false, where = "channel") {
         end: g.end?.toISOString?.() ?? null,
       })),
     },
-    where,
   });
-
-  await channel.send({ embeds: [embed] });
 }
 
 const client = new Client({
@@ -140,12 +176,12 @@ client.once("clientReady", async () => {
   const FORCE_ON_BOOT = (process.env.FORCE_ON_BOOT || "false").toLowerCase() === "true";
 
   try {
-    await postFreebies(client, FORCE_ON_BOOT, "boot");
+    await publishUpdated(client, FORCE_ON_BOOT, "boot");
   } catch (e) {
     console.error("Post iniziale fallito:", e);
   }
 
-  setInterval(() => postFreebies(client, false, "interval").catch(console.error), CHECK_MIN * 60_000);
+  setInterval(() => publishUpdated(client, false, "auto").catch(console.error), CHECK_MIN * 60_000);
 });
 
 client.on("messageCreate", async (msg) => {
@@ -153,11 +189,12 @@ client.on("messageCreate", async (msg) => {
 
   const cmd = msg.content.trim();
 
-  // ✅ comando unico
+  // Comando unico: pubblica ESATTAMENTE come l’automatico,
+  // sostituendo il messaggio precedente
   if (cmd === CMD_FREE) {
     try {
-      await postFreebies(client, true, "command");
-      await msg.reply("✅ Inviato lo stesso messaggio che uscirebbe in automatico.");
+      await publishUpdated(client, true, "manual");
+      await msg.reply("✅ OK: ho pubblicato il messaggio aggiornato (sostituendo il precedente).");
     } catch (e) {
       console.error(e);
       await msg.reply("❌ Errore durante il recupero delle offerte.");
@@ -165,7 +202,6 @@ client.on("messageCreate", async (msg) => {
     return;
   }
 
-  // debug Epic (come prima)
   if (cmd === "!epicdebug") {
     try {
       const { debugSamples, current, upcoming } = await fetchEpicFreePromos({ debug: true });
@@ -181,7 +217,7 @@ client.on("messageCreate", async (msg) => {
       );
     } catch (e) {
       console.error(e);
-      await msg.reply("❌ Debug fallito (vedi log container).");
+      await msg.reply("❌ Debug fallito (vedi log).");
     }
   }
 });
