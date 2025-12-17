@@ -183,7 +183,7 @@ client.once("ready", async () => {
   console.log(`🤖 Loggato come ${client.user.tag}`);
 
   try {
-    await publishUpdated(client, FORCE_ON_BOOT, "boot");
+    await publishUpdated(client, true, "boot");
   } catch (e) {
     console.error("Post iniziale fallito:", e);
   }
