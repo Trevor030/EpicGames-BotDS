@@ -1,16 +1,14 @@
-version: "3.8"
-
 services:
   epic-bot:
-    image: epic-games-discord-bot
+    build: .
     container_name: epic-bot
     restart: unless-stopped
-
     environment:
       DISCORD_TOKEN: ${DISCORD_TOKEN}
       DISCORD_CHANNEL_ID: ${DISCORD_CHANNEL_ID}
       ITAD_API_KEY: ${ITAD_API_KEY}
       ITAD_COUNTRY: IT
+
       STEAM_MAX_FINAL_EUR: "9"
       STEAM_MIN_DISCOUNT_PCT: "50"
       STEAM_MAX_RESULTS: "60"
