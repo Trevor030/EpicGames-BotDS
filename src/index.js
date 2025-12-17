@@ -10,6 +10,7 @@ const CHANNEL_ID = process.env.DISCORD_CHANNEL_ID;
 const CHECK_MIN = Number(process.env.CHECK_EVERY_MIN || 60);
 
 const CMD_FREE = process.env.CMD_FREE || "!free";
+const CONFIRM_RUNS = Number(process.env.CONFIRM_RUNS || 2); // ✅ debounce
 
 if (!TOKEN || !CHANNEL_ID) throw new Error("DISCORD_TOKEN o DISCORD_CHANNEL_ID mancanti");
 
@@ -17,25 +18,8 @@ const state = loadState();
 let lastHash = state.lastHash || "";
 let lastMessageId = state.messageId || null;
 
-function stableKey(g) {
-  return [
-    (g.title || "").trim(),
-    g.url || "",
-    g.start instanceof Date ? g.start.toISOString() : String(g.start || ""),
-    g.end instanceof Date ? g.end.toISOString() : String(g.end || ""),
-    String(g.discountPercent ?? ""),
-    String(g.originalCents ?? ""),
-    String(g.finalCents ?? ""),
-    String(g.currency ?? ""),
-  ].join("|");
-}
-
-function hashAll({ epicCurrent, epicUpcoming, steamDeals }) {
-  const eC = [...epicCurrent].map(stableKey).sort().join(";");
-  const eU = [...epicUpcoming].map(stableKey).sort().join(";");
-  const sD = [...steamDeals].map(stableKey).sort().join(";");
-  return `EPIC:${eC}||EPIC_UP:${eU}||STEAM_DEALS:${sD}`;
-}
+let pendingHash = state.pendingHash ?? null;
+let pendingCount = state.pendingCount ?? 0;
 
 function safeField(text, fallback = "—") {
   if (!text || !text.trim()) return fallback;
@@ -44,9 +28,7 @@ function safeField(text, fallback = "—") {
 
 function steamDealsText(deals) {
   if (!deals?.length) return "—";
-
   const top = deals.slice(0, 10);
-
   const lines = top.map(g => {
     const pricePart =
       g.originalPriceText && g.finalPriceText
@@ -59,9 +41,34 @@ function steamDealsText(deals) {
 
     return `• **${g.title}**\n${pricePart}\n${g.url}${endPart}`;
   });
-
   const extra = deals.length > 10 ? `\n\n(+${deals.length - 10} altri)` : "";
   return safeField(lines.join("\n\n") + extra);
+}
+
+/**
+ * ✅ Chiave di cambiamento "anti-rumore":
+ * - EPIC: titolo + start/end + url (abbastanza stabile)
+ * - STEAM: appId + discountPercent + end (NON prezzi) -> evita falsi cambi per micro-variazioni
+ */
+function changeKeyEpic(g) {
+  return [
+    (g.title || "").trim(),
+    g.url || "",
+    g.start instanceof Date ? g.start.toISOString() : "",
+    g.end instanceof Date ? g.end.toISOString() : "",
+  ].join("|");
+}
+
+function changeKeySteam(g) {
+  const endIso = g.end instanceof Date ? g.end.toISOString() : "";
+  return [String(g.appId ?? ""), String(g.discountPercent ?? ""), endIso].join("|");
+}
+
+function computeChangeHash({ epicCurrent, epicUpcoming, steamDeals }) {
+  const eC = [...epicCurrent].map(changeKeyEpic).sort().join(";");
+  const eU = [...epicUpcoming].map(changeKeyEpic).sort().join(";");
+  const sD = [...steamDeals].map(changeKeySteam).sort().join(";");
+  return `EPIC:${eC}||EPIC_UP:${eU}||STEAM:${sD}`;
 }
 
 async function buildPayload(reason) {
@@ -76,72 +83,96 @@ async function buildPayload(reason) {
 
   const minDisc = Number(process.env.MIN_STEAM_DISCOUNT || 90);
 
-  // AVVISO BEN VISIBILE (testo del messaggio)
   const content =
     `🔔 **Aggiornamento rilevato** (${reason})\n` +
     `🗓️ Pubblicato: <t:${ts}:F>  •  <t:${ts}:R>`;
 
-  // EMBED con data ben leggibile
   const embed = new EmbedBuilder()
     .setTitle("🎁 Giochi Gratis / Super Sconti – Epic + Steam")
     .addFields(
-      {
-        name: "🕒 Aggiornato",
-        value: `**<t:${ts}:F>**\n(<t:${ts}:R>)`,
-        inline: false,
-      },
+      { name: "🕒 Aggiornato", value: `**<t:${ts}:F>**\n(<t:${ts}:R>)`, inline: false },
       { name: "✅ Epic – Disponibili ora", value: safeField(currentText(epicCurrent)), inline: false },
       { name: "⏭️ Epic – Prossimi", value: safeField(upcomingText(epicUpcoming)), inline: false },
-      { name: `🎮 Steam – Sconti ≥ ${minDisc}%`, value: steamDealsText(steamDeals), inline: false }
+      { name: `🎮 Steam – Sconti ≥ ${minDisc}% (con prezzi)`, value: steamDealsText(steamDeals), inline: false }
     )
-    .setFooter({ text: "Il messaggio precedente viene eliminato: resta sempre solo quello aggiornato." });
+    .setFooter({ text: "Resta sempre 1 messaggio: il precedente viene eliminato." });
 
   return { content, embed, epicCurrent, epicUpcoming, steamDeals };
 }
 
 async function deletePreviousIfAny(channel) {
   if (!lastMessageId) return;
-
   try {
     const oldMsg = await channel.messages.fetch(lastMessageId);
     await oldMsg.delete();
   } catch {
-    // se non esiste più / permessi / già cancellato: ignoriamo
+    // ignoriamo (già cancellato / permessi / non trovato)
   } finally {
     lastMessageId = null;
   }
 }
 
-/**
- * Pubblica aggiornamento:
- * - se non cambia nulla e force=false => silenzio
- * - se cambia (o force=true) => cancella il vecchio e manda il nuovo
- */
-async function publishUpdated(client, force = false, reason = "auto") {
-  const channel = await client.channels.fetch(CHANNEL_ID);
-
-  const { content, embed, epicCurrent, epicUpcoming, steamDeals } = await buildPayload(reason);
-
-  const hash = hashAll({ epicCurrent, epicUpcoming, steamDeals });
-
-  if (!force && hash === lastHash) return;
-
-  // c'è un update vero (o forzato): elimina il vecchio, poi manda il nuovo
-  await deletePreviousIfAny(channel);
-
-  const sent = await channel.send({ content, embeds: [embed] });
-
-  // aggiorna stato persistente
-  lastHash = hash;
-  lastMessageId = sent.id;
-
+function persist() {
   saveState({
     lastHash,
     lastChangeAt: new Date().toISOString(),
     messageId: lastMessageId,
+    pendingHash,
+    pendingCount,
   });
+}
 
-  // storico SOLO quando pubblichiamo davvero
+/**
+ * Debounce: notifichiamo solo se lo stesso nuovo hash appare per CONFIRM_RUNS volte consecutive.
+ */
+function shouldPublishWithDebounce(newHash, force) {
+  if (force) {
+    pendingHash = null;
+    pendingCount = 0;
+    return true;
+  }
+
+  if (newHash === lastHash) {
+    // tornati allo stato noto: reset pending
+    pendingHash = null;
+    pendingCount = 0;
+    persist();
+    return false;
+  }
+
+  if (pendingHash === newHash) {
+    pendingCount += 1;
+  } else {
+    pendingHash = newHash;
+    pendingCount = 1;
+  }
+
+  persist();
+
+  return pendingCount >= Math.max(1, CONFIRM_RUNS);
+}
+
+async function publishUpdated(client, force = false, reason = "auto") {
+  const channel = await client.channels.fetch(CHANNEL_ID);
+  const { content, embed, epicCurrent, epicUpcoming, steamDeals } = await buildPayload(reason);
+
+  const newHash = computeChangeHash({ epicCurrent, epicUpcoming, steamDeals });
+
+  if (!shouldPublishWithDebounce(newHash, force)) return;
+
+  // ok confermato: pubblichiamo e resettiamo pending
+  pendingHash = null;
+  pendingCount = 0;
+
+  await deletePreviousIfAny(channel);
+
+  const sent = await channel.send({ content, embeds: [embed] });
+
+  lastHash = newHash;
+  lastMessageId = sent.id;
+
+  persist();
+
   appendHistory({
     forced: !!force,
     reason,
@@ -151,6 +182,7 @@ async function publishUpdated(client, force = false, reason = "auto") {
     },
     steam: {
       deals: steamDeals.map(g => ({
+        appId: g.appId,
         title: g.title,
         url: g.url,
         discountPercent: g.discountPercent,
@@ -163,11 +195,7 @@ async function publishUpdated(client, force = false, reason = "auto") {
 }
 
 const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-  ],
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
 });
 
 client.once("clientReady", async () => {
@@ -189,36 +217,16 @@ client.on("messageCreate", async (msg) => {
 
   const cmd = msg.content.trim();
 
-  // Comando unico: pubblica ESATTAMENTE come l’automatico,
-  // sostituendo il messaggio precedente
+  // comando unico: pubblica esattamente come l’automatico, ma forzato
   if (cmd === CMD_FREE) {
     try {
       await publishUpdated(client, true, "manual");
-      await msg.reply("✅ OK: ho pubblicato il messaggio aggiornato (sostituendo il precedente).");
+      await msg.reply("✅ OK: messaggio aggiornato pubblicato (sostituendo il precedente).");
     } catch (e) {
       console.error(e);
       await msg.reply("❌ Errore durante il recupero delle offerte.");
     }
     return;
-  }
-
-  if (cmd === "!epicdebug") {
-    try {
-      const { debugSamples, current, upcoming } = await fetchEpicFreePromos({ debug: true });
-
-      const lines = (debugSamples || []).map(s =>
-        `• ${s.title} | free=${s.freeDetected} | type=${s.discountType ?? "-"} pct=${s.discountPct ?? "-"} | dp=${s.discountPrice ?? "-"} op=${s.originalPrice ?? "-"}`
-      );
-
-      await msg.reply(
-        "🧪 **EPIC DEBUG (top 10 promo viste)**\n" +
-        (lines.length ? lines.join("\n") : "(nessun sample)") +
-        `\n\nCurrent found: ${current.length} | Upcoming found: ${upcoming.length}`
-      );
-    } catch (e) {
-      console.error(e);
-      await msg.reply("❌ Debug fallito (vedi log).");
-    }
   }
 });
 
