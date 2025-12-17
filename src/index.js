@@ -60,9 +60,9 @@ function changeKeyEpic(g) {
 }
 
 function changeKeySteam(g) {
-  const endIso = g.end instanceof Date ? g.end.toISOString() : "";
-  return [String(g.appId ?? ""), String(g.discountPercent ?? ""), endIso].join("|");
+  return `${g.appId}|${g.discountPercent ?? ""}`;
 }
+
 
 function computeChangeHash({ epicCurrent, epicUpcoming, steamDeals }) {
   const eC = [...epicCurrent].map(changeKeyEpic).sort().join(";");
