@@ -81,18 +81,25 @@ function buildDealsUrl(offset, limit) {
 function normalizeTitleKey(title) {
   let t = (title || "").toLowerCase();
 
-  // remove stuff in parentheses/brackets
+  // rimuove contenuto tra parentesi
   t = t.replace(/\(.*?\)/g, " ");
   t = t.replace(/\[.*?\]/g, " ");
 
-  // normalize separators/punctuation
+  // rimuove parole di edizione (QUESTO È IL FIX)
+  t = t.replace(
+    /\b(deluxe|gold|ultimate|definitive|complete|collector|premium|edition|bundle|goty|year|enhanced)\b/gi,
+    " "
+  );
+
+  // normalizza separatori
   t = t.replace(/[:\-–—|•·]/g, " ");
 
-  // collapse spaces
+  // pulizia finale
   t = t.replace(/\s+/g, " ").trim();
 
   return t;
 }
+
 
 /**
  * Robust AAA matcher:
