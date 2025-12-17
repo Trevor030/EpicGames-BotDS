@@ -14,7 +14,7 @@ const CHANNEL_ID = process.env.DISCORD_CHANNEL_ID;
 const CHECK_MIN = Number(process.env.CHECK_EVERY_MIN || 60);
 const CMD_FREE = process.env.CMD_FREE || "!free";
 const CONFIRM_RUNS = Number(process.env.CONFIRM_RUNS || 2);
-const FORCE_ON_BOOT = (process.env.FORCE_ON_BOOT || "false").toLowerCase() === "true";
+const FORCE_ON_BOOT = (process.env.FORCE_ON_BOOT || "true").toLowerCase() === "true";
 
 // soglia per considerare un gioco Steam “conosciuto / AAA”
 const AAA_ORIGINAL_PRICE = Number(process.env.STEAM_AAA_PRICE || 30);
