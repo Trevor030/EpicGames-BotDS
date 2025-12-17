@@ -200,7 +200,7 @@ async function buildPayload(reason) {
       }
     )
     .setFooter({
-      text: "Epic Games Store + Steam (via IsThereAnyDeal) • messaggio unico aggiornato",
+      text: "Epic Games Store + Steam • messaggio aggiornato automaticamente",
     });
 
   return { content, embed, epicCurrent, epicUpcoming, steamDeals };
