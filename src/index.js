@@ -80,16 +80,12 @@ function steamDealsText(deals) {
 
   if (top.length) {
     out +=
-      "⭐ **GIOCHI PIÙ CONOSCIUTI / AAA**\n" +
+   
       render(top, 6) +
       "\n\n";
   }
 
-  if (other.length) {
-    out +=
-      "🎮 **ALTRE OFFERTE STEAM**\n" +
-      render(other, 6);
-  }
+
 
   return safeField(out.trim());
 }
@@ -198,7 +194,7 @@ async function buildPayload(reason) {
         inline: false,
       },
       {
-        name: "🔵 STEAM — OFFERTE PRINCIPALI",
+        name: "🔵 STEAM — OFFERTE IN RISALTO",
         value: steamDealsText(steamDeals),
         inline: false,
       }
