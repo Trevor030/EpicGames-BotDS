@@ -81,7 +81,7 @@ function steamDealsText(deals) {
   if (top.length) {
     out +=
    
-      render(top, 6) +
+      render(top, 12) +
       "\n\n";
   }
 
