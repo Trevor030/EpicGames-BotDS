@@ -7,19 +7,29 @@ import { appendHistory } from "./history.js";
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const CHANNEL_ID = process.env.DISCORD_CHANNEL_ID;
-const CHECK_MIN = Number(process.env.CHECK_EVERY_MIN || 60);
 
+const CHECK_MIN = Number(process.env.CHECK_EVERY_MIN || 60);
 const CMD_FREE = process.env.CMD_FREE || "!free";
 const CONFIRM_RUNS = Number(process.env.CONFIRM_RUNS || 2);
+const FORCE_ON_BOOT = (process.env.FORCE_ON_BOOT || "false").toLowerCase() === "true";
 
 if (!TOKEN || !CHANNEL_ID) throw new Error("DISCORD_TOKEN o DISCORD_CHANNEL_ID mancanti");
 
 const state = loadState();
 let lastHash = state.lastHash || "";
 let lastMessageId = state.messageId || null;
-
 let pendingHash = state.pendingHash ?? null;
 let pendingCount = state.pendingCount ?? 0;
+
+function persist() {
+  saveState({
+    lastHash,
+    lastChangeAt: new Date().toISOString(),
+    messageId: lastMessageId,
+    pendingHash,
+    pendingCount,
+  });
+}
 
 function safeField(text, fallback = "—") {
   if (!text || !text.trim()) return fallback;
@@ -32,18 +42,19 @@ function steamDealsText(deals) {
 
   const top = deals.slice(0, 10);
   const lines = top.map(g => {
-    const pricePart =
+    const price =
       g.originalPriceText && g.finalPriceText
         ? `💸 ${g.originalPriceText} → **${g.finalPriceText}** (-${g.discountPercent}%)`
         : `(-${g.discountPercent ?? "?"}%)`;
 
-    return `• **${g.title}**\n${pricePart}\n${g.url}`;
+    return `• **${g.title}**\n${price}\n${g.url}`;
   });
 
   const extra = deals.length > 10 ? `\n\n(+${deals.length - 10} altri)` : "";
   return safeField(lines.join("\n\n") + extra);
 }
 
+// Chiavi “stabili” per evitare notifiche a caso
 function changeKeyEpic(g) {
   return [
     (g.title || "").trim(),
@@ -54,15 +65,51 @@ function changeKeyEpic(g) {
 }
 
 function changeKeySteam(g) {
-  // ✅ stabile: appId + prezzo finale + percentuale sconto (non dipende dal testo HTML)
+  // appId + prezzo finale numerico + percentuale
   return `${g.appId}|${g.finalEur ?? ""}|${g.discountPercent ?? ""}`;
 }
 
-function computeChangeHash({ epicCurrent, epicUpcoming, steamDeals }) {
+function computeHash({ epicCurrent, epicUpcoming, steamDeals }) {
   const eC = [...epicCurrent].map(changeKeyEpic).sort().join(";");
   const eU = [...epicUpcoming].map(changeKeyEpic).sort().join(";");
   const sD = steamDeals ? [...steamDeals].map(changeKeySteam).sort().join(";") : "STEAM_ERROR";
   return `EPIC:${eC}||EPIC_UP:${eU}||STEAM:${sD}`;
+}
+
+function shouldPublishWithDebounce(newHash, force) {
+  if (force) {
+    pendingHash = null;
+    pendingCount = 0;
+    return true;
+  }
+
+  if (newHash === lastHash) {
+    pendingHash = null;
+    pendingCount = 0;
+    persist();
+    return false;
+  }
+
+  if (pendingHash === newHash) pendingCount += 1;
+  else {
+    pendingHash = newHash;
+    pendingCount = 1;
+  }
+
+  persist();
+  return pendingCount >= Math.max(1, CONFIRM_RUNS);
+}
+
+async function deletePreviousIfAny(channel) {
+  if (!lastMessageId) return;
+  try {
+    const oldMsg = await channel.messages.fetch(lastMessageId);
+    await oldMsg.delete();
+  } catch {
+    // ignoriamo (non trovato / già cancellato / permessi)
+  } finally {
+    lastMessageId = null;
+  }
 }
 
 async function buildPayload(reason) {
@@ -72,6 +119,7 @@ async function buildPayload(reason) {
   const { current: epicCurrent, upcoming: epicUpcoming } =
     await fetchEpicFreePromos({ debug: false });
 
+  // Steam best-effort
   let steamDeals = null;
   try {
     steamDeals = await fetchSteamDeals();
@@ -99,81 +147,40 @@ async function buildPayload(reason) {
   return { content, embed, epicCurrent, epicUpcoming, steamDeals };
 }
 
-async function deletePreviousIfAny(channel) {
-  if (!lastMessageId) return;
-  try {
-    const oldMsg = await channel.messages.fetch(lastMessageId);
-    await oldMsg.delete();
-  } catch {
-  } finally {
-    lastMessageId = null;
-  }
-}
-
-function persist() {
-  saveState({
-    lastHash,
-    lastChangeAt: new Date().toISOString(),
-    messageId: lastMessageId,
-    pendingHash,
-    pendingCount,
-  });
-}
-
-function shouldPublishWithDebounce(newHash, force) {
-  if (force) {
-    pendingHash = null;
-    pendingCount = 0;
-    return true;
-  }
-
-  if (newHash === lastHash) {
-    pendingHash = null;
-    pendingCount = 0;
-    persist();
-    return false;
-  }
-
-  if (pendingHash === newHash) pendingCount += 1;
-  else {
-    pendingHash = newHash;
-    pendingCount = 1;
-  }
-
-  persist();
-  return pendingCount >= Math.max(1, CONFIRM_RUNS);
-}
-
 async function publishUpdated(client, force = false, reason = "auto") {
   const channel = await client.channels.fetch(CHANNEL_ID);
-  const { content, embed, epicCurrent, epicUpcoming, steamDeals } = await buildPayload(reason);
 
-  const newHash = computeChangeHash({ epicCurrent, epicUpcoming, steamDeals });
+  const { content, embed, epicCurrent, epicUpcoming, steamDeals } = await buildPayload(reason);
+  const newHash = computeHash({ epicCurrent, epicUpcoming, steamDeals });
 
   if (!shouldPublishWithDebounce(newHash, force)) return;
 
+  // confermato → reset pending
   pendingHash = null;
   pendingCount = 0;
 
   await deletePreviousIfAny(channel);
+
   const sent = await channel.send({ content, embeds: [embed] });
 
   lastHash = newHash;
   lastMessageId = sent.id;
-
   persist();
 
   appendHistory({ forced: !!force, reason });
 }
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+  ],
 });
 
-client.once("clientReady", async () => {
+// ✅ EVENTO GIUSTO: "ready"
+client.once("ready", async () => {
   console.log(`🤖 Loggato come ${client.user.tag}`);
-
-  const FORCE_ON_BOOT = (process.env.FORCE_ON_BOOT || "false").toLowerCase() === "true";
 
   try {
     await publishUpdated(client, FORCE_ON_BOOT, "boot");
@@ -188,6 +195,7 @@ client.on("messageCreate", async (msg) => {
   if (msg.author.bot) return;
 
   const cmd = msg.content.trim();
+
   if (cmd === CMD_FREE) {
     try {
       await publishUpdated(client, true, "manual");
