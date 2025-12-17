@@ -1,19 +1,23 @@
-services:
+      services:
   epic-bot:
     build: .
     container_name: epic-bot
     restart: unless-stopped
     environment:
-      DISCORD_TOKEN: ${DISCORD_TOKEN}
+     DISCORD_TOKEN: ${DISCORD_TOKEN}
       DISCORD_CHANNEL_ID: ${DISCORD_CHANNEL_ID}
       ITAD_API_KEY: ${ITAD_API_KEY}
-      ITAD_COUNTRY: IT
+      ITAD_COUNTRY: "IT"
+
+      CMD_FREE: "!free"
+      CHECK_EVERY_MIN: "60"
+      CONFIRM_RUNS: "2"
+      FORCE_ON_BOOT: "true"
 
       STEAM_MAX_FINAL_EUR: "9"
       STEAM_MIN_DISCOUNT_PCT: "50"
       STEAM_MAX_RESULTS: "60"
-      CHECK_EVERY_MIN: "60"
+
       STEAM_STRICT_AAA: "true"
       STEAM_AAA_TARGET: "12"
-      STEAM_AAA_KEYWORDS: "assassin's creed|assassins creed|tomb raider|grand theft auto|grand|red dead|the witcher|cyberpunk|elden ring|dark souls|sekiro|resident evil|monster hunter|final fantasy|persona|yakuza|call of duty|battlefield|far cry|watch dogs|hitman|bioshock|borderlands|doom|wolfenstein|skyrim|fallout|starfield|halo|forza|diablo|overwatch|star wars|f1 |nba 2k|mortal kombat|street fighter|tekken|need for speed|assassin|ubisoft|rockstar|square enix|sega|ea"
-
+      STEAM_AAA_KEYWORDS: "assassin's creed|assassins creed|tomb raider|grand theft auto|red dead redemption|the witcher|cyberpunk 2077|elden ring|dark souls|sekiro|resident evil|monster hunter|final fantasy|persona 5|like a dragon|yakuza|call of duty|battlefield|far cry|watch dogs|hitman|bioshock|borderlands|doom|wolfenstein|the elder scrolls|skyrim|fallout|halo|forza|diablo|overwatch|star wars jedi|need for speed|mortal kombat|street fighter|tekken"
