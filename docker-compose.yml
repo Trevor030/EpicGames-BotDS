@@ -4,10 +4,13 @@ services:
     container_name: epic-bot
     restart: unless-stopped
     environment:
-      - DISCORD_TOKEN=xxx
-      - DISCORD_CHANNEL_ID=xxx
-      - ITAD_API_KEY=LA_TUA_CHIAVE
-      - ITAD_COUNTRY=IT
-      - STEAM_MAX_FINAL_EUR=9
-      - STEAM_MIN_DISCOUNT_PCT=50
-      - STEAM_MAX_RESULTS=60
+      services:
+  epic-bot:
+    image: epic-games-discord-bot
+    environment:
+      DISCORD_TOKEN: ${DISCORD_TOKEN}
+      DISCORD_CHANNEL_ID: ${DISCORD_CHANNEL_ID}
+      ITAD_API_KEY: ${ITAD_API_KEY}
+      STEAM_MAX_FINAL_EUR:9
+      STEAM_MIN_DISCOUNT_PCT:50
+      STEAM_MAX_RESULTS:60
