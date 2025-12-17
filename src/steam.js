@@ -1,6 +1,8 @@
 // steam.js
-// Steam via HTML (no JSON): filtra giochi con sconto e prezzo finale <= 9€
-// ma esclude quelli che già costavano <= 9€ (originale > 9€)
+// Steam via HTML: mostra giochi con prezzo finale <= 9€
+// Esclude quelli già economici in due modi:
+// 1) se abbiamo originale e finale: originale > 9€
+// 2) se originale manca: richiede sconto >= MIN_DISCOUNT_PCT (fallback)
 
 const CC = process.env.STEAM_CC || "IT";
 const LANG = process.env.STEAM_LANG || "italian";
@@ -8,6 +10,7 @@ const LANG = process.env.STEAM_LANG || "italian";
 const MAX_FINAL_EUR = Number(process.env.STEAM_MAX_FINAL_EUR || 9);
 const MAX_RESULTS = Number(process.env.STEAM_MAX_RESULTS || 120);
 const PAGE_SIZE = Number(process.env.STEAM_PAGE_SIZE || 50);
+const MIN_DISCOUNT_PCT = Number(process.env.STEAM_MIN_DISCOUNT_PCT || 50); // fallback
 
 function makeHeaders() {
   return {
@@ -28,23 +31,31 @@ function parseEuroToNumber(txt) {
   return Number(m[1].replace(",", "."));
 }
 
-function pickTwoPrices(priceText) {
+function extractPrices(priceText) {
   const tokens = priceText.match(/(?:€\s*)?\d+[.,]\d{2}\s*€?/g) || [];
-  if (tokens.length < 2) return { original: null, final: null, originalText: null, finalText: null };
+  if (!tokens.length) return { original: null, final: null, originalText: null, finalText: null };
 
-  const aText = tokens[tokens.length - 2].trim();
-  const bText = tokens[tokens.length - 1].trim();
-  const a = parseEuroToNumber(aText);
-  const b = parseEuroToNumber(bText);
-  if (a == null || b == null) return { original: null, final: null, originalText: null, finalText: null };
+  // spesso se scontato: due prezzi; se no: uno
+  if (tokens.length >= 2) {
+    const aText = tokens[tokens.length - 2].trim();
+    const bText = tokens[tokens.length - 1].trim();
+    const a = parseEuroToNumber(aText);
+    const b = parseEuroToNumber(bText);
+    if (a == null || b == null) return { original: null, final: null, originalText: null, finalText: null };
 
-  const original = Math.max(a, b);
-  const final = Math.min(a, b);
+    const original = Math.max(a, b);
+    const final = Math.min(a, b);
 
-  const originalText = (original === a ? aText : bText).replace(/\s+/g, " ").trim();
-  const finalText = (final === a ? aText : bText).replace(/\s+/g, " ").trim();
+    const originalText = (original === a ? aText : bText).replace(/\s+/g, " ").trim();
+    const finalText = (final === a ? aText : bText).replace(/\s+/g, " ").trim();
 
-  return { original, final, originalText, finalText };
+    return { original, final, originalText, finalText };
+  }
+
+  // un solo prezzo (lo trattiamo come "finale")
+  const onlyText = tokens[0].trim();
+  const only = parseEuroToNumber(onlyText);
+  return { original: null, final: only, originalText: null, finalText: onlyText };
 }
 
 function parseSearchHtml(html) {
@@ -66,14 +77,23 @@ function parseSearchHtml(html) {
 
     const priceRaw = b.match(/class="search_price[^"]*">([\s\S]*?)<\/div>/)?.[1] || "";
     const priceText = priceRaw.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+    const { original, final, originalText, finalText } = extractPrices(priceText);
 
-    const { original, final, originalText, finalText } = pickTwoPrices(priceText);
-
-    // filtri richiesti
-    if (!discountPercent || discountPercent <= 0) continue;
-    if (original == null || final == null) continue;
+    // deve avere prezzo finale leggibile e sotto soglia
+    if (final == null) continue;
     if (!(final <= MAX_FINAL_EUR)) continue;
-    if (!(original > MAX_FINAL_EUR)) continue;
+
+    // deve essere scontato (almeno un po')
+    if (discountPercent <= 0) continue;
+
+    // esclusione "già economici":
+    // - se originale presente: originale > MAX_FINAL_EUR
+    // - se originale assente: chiedi sconto importante (fallback)
+    if (original != null) {
+      if (!(original > MAX_FINAL_EUR)) continue;
+    } else {
+      if (discountPercent < MIN_DISCOUNT_PCT) continue;
+    }
 
     out.push({
       appId: Number(appId),
