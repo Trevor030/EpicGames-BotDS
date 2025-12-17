@@ -1,10 +1,4 @@
-// src/steam.js
-// Steam deals via IsThereAnyDeal:
-// - prendo deal Steam (shops=61) con sort=-cut
-// - filtro: type=game, mature=false, final<=MAX, cut>=MIN, regular>MAX
-// - priorità: giochi presenti nei "most waitlisted" ITAD (popolarità oggettiva)
-// Docs: deals/v2 (sort, shops, mature) + stats/most-waitlisted/v1 :contentReference[oaicite:3]{index=3}
-
+// src/steam.js — ITAD Steam-only + STRICT AAA via keyword whitelist + pagination
 const ITAD_API_KEY = process.env.ITAD_API_KEY;
 const ITAD_COUNTRY = process.env.ITAD_COUNTRY || "IT";
 
@@ -12,12 +6,15 @@ const MAX_FINAL_EUR = Number(process.env.STEAM_MAX_FINAL_EUR || 9);
 const MIN_DISCOUNT_PCT = Number(process.env.STEAM_MIN_DISCOUNT_PCT || 50);
 const MAX_RESULTS = Number(process.env.STEAM_MAX_RESULTS || 60);
 
-// fallback “AAA” dopo la popolarità
-const AAA_ORIGINAL_PRICE = Number(process.env.STEAM_AAA_PRICE || 30);
+const STRICT_AAA = (process.env.STEAM_STRICT_AAA || "false").toLowerCase() === "true";
+const AAA_TARGET = Number(process.env.STEAM_AAA_TARGET || 12);
+const AAA_KEYWORDS_RAW = process.env.STEAM_AAA_KEYWORDS || "";
+const AAA_RE = AAA_KEYWORDS_RAW
+  ? new RegExp(`(${AAA_KEYWORDS_RAW})`, "i")
+  : null;
 
 const STEAM_SHOP_ID = 61;
 const ITAD_DEALS_V2 = "https://api.isthereanydeal.com/deals/v2";
-const ITAD_MOST_WAITLISTED = "https://api.isthereanydeal.com/stats/most-waitlisted/v1";
 
 function fmtEuro(amount) {
   if (typeof amount !== "number") return null;
@@ -32,7 +29,6 @@ async function itadGet(url) {
       "x-api-key": ITAD_API_KEY,
     },
   });
-
   if (!res.ok) {
     const txt = await res.text().catch(() => "");
     throw new Error(`ITAD fetch failed: ${res.status}${txt ? " - " + txt.slice(0, 160) : ""}`);
@@ -40,23 +36,20 @@ async function itadGet(url) {
   return await res.json();
 }
 
-function buildDealsUrl() {
+function buildDealsUrl(offset, limit) {
   const u = new URL(ITAD_DEALS_V2);
   u.searchParams.set("key", ITAD_API_KEY);
   u.searchParams.set("country", ITAD_COUNTRY);
-  u.searchParams.set("shops", String(STEAM_SHOP_ID)); // Steam-only :contentReference[oaicite:4]{index=4}
-  u.searchParams.set("limit", "200");                 // max 200 :contentReference[oaicite:5]{index=5}
-  u.searchParams.set("offset", "0");
-  u.searchParams.set("sort", "-cut");                 // highest cut :contentReference[oaicite:6]{index=6}
+  u.searchParams.set("shops", String(STEAM_SHOP_ID));
+  u.searchParams.set("limit", String(limit));
+  u.searchParams.set("offset", String(offset));
+  u.searchParams.set("sort", "-cut"); // partiamo da sconti alti
   return u.toString();
 }
 
-function buildMostWaitlistedUrl() {
-  const u = new URL(ITAD_MOST_WAITLISTED);
-  u.searchParams.set("key", ITAD_API_KEY);
-  u.searchParams.set("offset", "0");
-  u.searchParams.set("limit", "500"); // doc: fino a 500 :contentReference[oaicite:7]{index=7}
-  return u.toString();
+function isAAA(title) {
+  if (!AAA_RE) return true; // se non hai impostato keywords, non filtra
+  return AAA_RE.test(title || "");
 }
 
 export async function fetchSteamDeals() {
@@ -64,92 +57,77 @@ export async function fetchSteamDeals() {
     throw new Error("ITAD_API_KEY mancante (registrala in isthereanydeal.com -> My Apps).");
   }
 
-  // 1) Popolarità: lista “most waitlisted”
-  let popularPos = new Map();
-  try {
-    const popular = await itadGet(buildMostWaitlistedUrl());
-    // formato: array di { position, id, ... } :contentReference[oaicite:8]{index=8}
-    for (const row of Array.isArray(popular) ? popular : []) {
-      if (row?.id && typeof row.position === "number") popularPos.set(row.id, row.position);
-    }
-  } catch {
-    // se fallisce, continuiamo comunque (non deve rompere il bot)
-    popularPos = new Map();
-  }
-
-  // 2) Deals Steam (ITAD)
-  const data = await itadGet(buildDealsUrl());
-  const list = data?.list || [];
+  const want = STRICT_AAA ? Math.max(1, AAA_TARGET) : Math.max(10, Math.min(MAX_RESULTS, 200));
+  const pageSize = 200;
 
   const out = [];
   const seen = new Set();
 
-  for (const item of list) {
-    if (!item?.deal) continue;
+  let offset = 0;
+  let loops = 0;
 
-    // SOLO giochi
-    if (item.type && item.type !== "game") continue;
+  // paginiamo finché troviamo abbastanza (AAA o normali), ma senza fare loop infinito
+  while (out.length < want && loops < 10) {
+    loops += 1;
+    const data = await itadGet(buildDealsUrl(offset, pageSize));
+    const list = data?.list || [];
+    if (!list.length) break;
 
-    // Escludi mature (campo presente in deals/v2) :contentReference[oaicite:9]{index=9}
-    if (item.mature === true) continue;
+    for (const item of list) {
+      if (!item?.deal) continue;
+      if (item.type && item.type !== "game") continue;
+      if (item.mature === true) continue;
 
-    const deal = item.deal;
-    const cut = Number(deal.cut ?? 0);
-    const price = deal?.price?.amount;
-    const regular = deal?.regular?.amount;
-    const currency = deal?.price?.currency;
+      const deal = item.deal;
+      const cut = Number(deal.cut ?? 0);
+      const price = deal?.price?.amount;
+      const regular = deal?.regular?.amount;
+      const currency = deal?.price?.currency;
 
-    if (currency && currency !== "EUR") continue;
+      if (currency && currency !== "EUR") continue;
 
-    if (!(cut >= MIN_DISCOUNT_PCT)) continue;
-    if (!(typeof price === "number" && price <= MAX_FINAL_EUR)) continue;
-    if (!(typeof regular === "number" && regular > MAX_FINAL_EUR)) continue;
+      if (!(cut >= MIN_DISCOUNT_PCT)) continue;
+      if (!(typeof price === "number" && price <= MAX_FINAL_EUR)) continue;
+      if (!(typeof regular === "number" && regular > MAX_FINAL_EUR)) continue;
 
-    const key = `${item.id}|${cut}|${price}|${regular}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
+      const title = item.title || item.slug || "Senza titolo";
 
-    out.push({
-      id: item.id,
-      title: item.title || item.slug || "Senza titolo",
-      url: deal.url || `https://isthereanydeal.com/game/${item.slug}/`,
-      discountPercent: cut,
-      originalEur: regular,
-      finalEur: price,
-      originalPriceText: fmtEuro(regular),
-      finalPriceText: fmtEuro(price),
-      end: deal.expiry ? new Date(deal.expiry) : null,
+      // ⭐ filtro “super famosi”
+      if (STRICT_AAA && !isAAA(title)) continue;
 
-      // ranking helpers
-      popularRank: popularPos.has(item.id) ? popularPos.get(item.id) : null,
-      aaaBoost: (regular >= AAA_ORIGINAL_PRICE),
-    });
+      const key = `${item.id}|${cut}|${price}|${regular}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      out.push({
+        id: item.id,
+        title,
+        url: deal.url || `https://isthereanydeal.com/game/${item.slug}/`,
+        discountPercent: cut,
+        originalEur: regular,
+        finalEur: price,
+        originalPriceText: fmtEuro(regular),
+        finalPriceText: fmtEuro(price),
+        end: deal.expiry ? new Date(deal.expiry) : null,
+      });
+
+      if (out.length >= want) break;
+    }
+
+    // se ITAD dice che non ha altro, stop
+    if (!data?.hasMore) break;
+
+    offset = Number(data?.nextOffset ?? (offset + pageSize));
+    if (!Number.isFinite(offset)) break;
   }
 
-  // 3) Ordine “come lo vuoi tu”
-  // - prima i popolari (most waitlisted) → rank più basso = più popolare
-  // - poi AAA boost (originale alto)
-  // - poi sconto alto
-  // - poi prezzo basso
-  out.sort((a, b) => {
-    const ap = a.popularRank ?? 999999;
-    const bp = b.popularRank ?? 999999;
-    if (ap !== bp) return ap - bp;
+  // ordina: prima “più grossi” (originale alto), poi sconto, poi prezzo
+  out.sort((a, b) =>
+    (b.originalEur ?? 0) - (a.originalEur ?? 0) ||
+    (b.discountPercent ?? 0) - (a.discountPercent ?? 0) ||
+    (a.finalEur ?? 999) - (b.finalEur ?? 999) ||
+    a.title.localeCompare(b.title)
+  );
 
-    const aa = a.aaaBoost ? 1 : 0;
-    const ba = b.aaaBoost ? 1 : 0;
-    if (aa !== ba) return ba - aa;
-
-    const ad = a.discountPercent ?? 0;
-    const bd = b.discountPercent ?? 0;
-    if (ad !== bd) return bd - ad;
-
-    const af = a.finalEur ?? 999;
-    const bf = b.finalEur ?? 999;
-    if (af !== bf) return af - bf;
-
-    return String(a.title).localeCompare(String(b.title));
-  });
-
-  return out.slice(0, MAX_RESULTS);
+  return STRICT_AAA ? out.slice(0, want) : out.slice(0, Math.min(MAX_RESULTS, out.length));
 }
