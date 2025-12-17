@@ -10,7 +10,7 @@ const CHANNEL_ID = process.env.DISCORD_CHANNEL_ID;
 const CHECK_MIN = Number(process.env.CHECK_EVERY_MIN || 60);
 
 const CMD_FREE = process.env.CMD_FREE || "!free";
-const CONFIRM_RUNS = Number(process.env.CONFIRM_RUNS || 2); // ✅ debounce
+const CONFIRM_RUNS = Number(process.env.CONFIRM_RUNS || 2);
 
 if (!TOKEN || !CHANNEL_ID) throw new Error("DISCORD_TOKEN o DISCORD_CHANNEL_ID mancanti");
 
@@ -27,7 +27,9 @@ function safeField(text, fallback = "—") {
 }
 
 function steamDealsText(deals) {
-  if (!deals?.length) return "—";
+  if (!deals) return "⚠️ Steam: errore nel recupero (riprovare più tardi).";
+  if (!deals.length) return "—";
+
   const top = deals.slice(0, 10);
   const lines = top.map(g => {
     const pricePart =
@@ -35,21 +37,13 @@ function steamDealsText(deals) {
         ? `💸 ${g.originalPriceText} → **${g.finalPriceText}** (-${g.discountPercent}%)`
         : `(-${g.discountPercent ?? "?"}%)`;
 
-    const endPart = g.end
-      ? `\n⏳ Scade: <t:${Math.floor(g.end.getTime() / 1000)}:R>`
-      : "";
-
-    return `• **${g.title}**\n${pricePart}\n${g.url}${endPart}`;
+    return `• **${g.title}**\n${pricePart}\n${g.url}`;
   });
+
   const extra = deals.length > 10 ? `\n\n(+${deals.length - 10} altri)` : "";
   return safeField(lines.join("\n\n") + extra);
 }
 
-/**
- * ✅ Chiave di cambiamento "anti-rumore":
- * - EPIC: titolo + start/end + url (abbastanza stabile)
- * - STEAM: appId + discountPercent + end (NON prezzi) -> evita falsi cambi per micro-variazioni
- */
 function changeKeyEpic(g) {
   return [
     (g.title || "").trim(),
@@ -60,14 +54,14 @@ function changeKeyEpic(g) {
 }
 
 function changeKeySteam(g) {
+  // ✅ stabile: appId + percentuale (NON prezzi)
   return `${g.appId}|${g.discountPercent ?? ""}`;
 }
-
 
 function computeChangeHash({ epicCurrent, epicUpcoming, steamDeals }) {
   const eC = [...epicCurrent].map(changeKeyEpic).sort().join(";");
   const eU = [...epicUpcoming].map(changeKeyEpic).sort().join(";");
-  const sD = [...steamDeals].map(changeKeySteam).sort().join(";");
+  const sD = steamDeals ? [...steamDeals].map(changeKeySteam).sort().join(";") : "STEAM_ERROR";
   return `EPIC:${eC}||EPIC_UP:${eU}||STEAM:${sD}`;
 }
 
@@ -75,11 +69,17 @@ async function buildPayload(reason) {
   const now = new Date();
   const ts = Math.floor(now.getTime() / 1000);
 
-  const [{ current: epicCurrent, upcoming: epicUpcoming }, steamDeals] =
-    await Promise.all([
-      fetchEpicFreePromos({ debug: false }),
-      fetchSteamDeals(),
-    ]);
+  const { current: epicCurrent, upcoming: epicUpcoming } =
+    await fetchEpicFreePromos({ debug: false });
+
+  // ✅ Steam best-effort: se esplode, non blocca Epic
+  let steamDeals = null;
+  try {
+    steamDeals = await fetchSteamDeals();
+  } catch (e) {
+    console.error("Steam fetch failed (ignored):", e);
+    steamDeals = null;
+  }
 
   const minDisc = Number(process.env.MIN_STEAM_DISCOUNT || 90);
 
@@ -106,7 +106,6 @@ async function deletePreviousIfAny(channel) {
     const oldMsg = await channel.messages.fetch(lastMessageId);
     await oldMsg.delete();
   } catch {
-    // ignoriamo (già cancellato / permessi / non trovato)
   } finally {
     lastMessageId = null;
   }
@@ -122,9 +121,6 @@ function persist() {
   });
 }
 
-/**
- * Debounce: notifichiamo solo se lo stesso nuovo hash appare per CONFIRM_RUNS volte consecutive.
- */
 function shouldPublishWithDebounce(newHash, force) {
   if (force) {
     pendingHash = null;
@@ -133,22 +129,19 @@ function shouldPublishWithDebounce(newHash, force) {
   }
 
   if (newHash === lastHash) {
-    // tornati allo stato noto: reset pending
     pendingHash = null;
     pendingCount = 0;
     persist();
     return false;
   }
 
-  if (pendingHash === newHash) {
-    pendingCount += 1;
-  } else {
+  if (pendingHash === newHash) pendingCount += 1;
+  else {
     pendingHash = newHash;
     pendingCount = 1;
   }
 
   persist();
-
   return pendingCount >= Math.max(1, CONFIRM_RUNS);
 }
 
@@ -160,12 +153,10 @@ async function publishUpdated(client, force = false, reason = "auto") {
 
   if (!shouldPublishWithDebounce(newHash, force)) return;
 
-  // ok confermato: pubblichiamo e resettiamo pending
   pendingHash = null;
   pendingCount = 0;
 
   await deletePreviousIfAny(channel);
-
   const sent = await channel.send({ content, embeds: [embed] });
 
   lastHash = newHash;
@@ -173,25 +164,7 @@ async function publishUpdated(client, force = false, reason = "auto") {
 
   persist();
 
-  appendHistory({
-    forced: !!force,
-    reason,
-    epic: {
-      current: epicCurrent.map(g => ({ title: g.title, url: g.url, start: g.start?.toISOString(), end: g.end?.toISOString() })),
-      upcoming: epicUpcoming.map(g => ({ title: g.title, url: g.url, start: g.start?.toISOString(), end: g.end?.toISOString() })),
-    },
-    steam: {
-      deals: steamDeals.map(g => ({
-        appId: g.appId,
-        title: g.title,
-        url: g.url,
-        discountPercent: g.discountPercent,
-        originalPrice: g.originalPriceText,
-        finalPrice: g.finalPriceText,
-        end: g.end?.toISOString?.() ?? null,
-      })),
-    },
-  });
+  appendHistory({ forced: !!force, reason });
 }
 
 const client = new Client({
@@ -216,8 +189,6 @@ client.on("messageCreate", async (msg) => {
   if (msg.author.bot) return;
 
   const cmd = msg.content.trim();
-
-  // comando unico: pubblica esattamente come l’automatico, ma forzato
   if (cmd === CMD_FREE) {
     try {
       await publishUpdated(client, true, "manual");
@@ -226,7 +197,6 @@ client.on("messageCreate", async (msg) => {
       console.error(e);
       await msg.reply("❌ Errore durante il recupero delle offerte.");
     }
-    return;
   }
 });
 
