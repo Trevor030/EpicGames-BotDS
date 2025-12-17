@@ -1,155 +1,119 @@
-// steam.js
-// Steam via HTML: mostra giochi con prezzo finale <= 9€
-// Esclude quelli già economici in due modi:
-// 1) se abbiamo originale e finale: originale > 9€
-// 2) se originale manca: richiede sconto >= MIN_DISCOUNT_PCT (fallback)
-
-const CC = process.env.STEAM_CC || "IT";
-const LANG = process.env.STEAM_LANG || "italian";
+// steam.js (SteamDB version)
+// Fonte: SteamDB "Current Steam Sales" (HTML table)
+// Filtri:
+// - finalEur <= MAX_FINAL_EUR
+// - discountPercent >= MIN_DISCOUNT_PCT
+// - excludeAlreadyCheap: stimiamo originale = final / (1 - discount/100) e richiediamo originale > MAX_FINAL_EUR
 
 const MAX_FINAL_EUR = Number(process.env.STEAM_MAX_FINAL_EUR || 9);
-const MAX_RESULTS = Number(process.env.STEAM_MAX_RESULTS || 120);
-const PAGE_SIZE = Number(process.env.STEAM_PAGE_SIZE || 50);
-const MIN_DISCOUNT_PCT = Number(process.env.STEAM_MIN_DISCOUNT_PCT || 50); // fallback
+const MIN_DISCOUNT_PCT = Number(process.env.STEAM_MIN_DISCOUNT_PCT || 50);
+const MAX_RESULTS = Number(process.env.STEAM_MAX_RESULTS || 60);
+
+// SteamDB mostra EU/Euro a seconda del contesto; qui parse “€” dalla tabella.
+const STEAMDB_SALES_URL = process.env.STEAMDB_SALES_URL || "https://steamdb.info/sales/";
 
 function makeHeaders() {
   return {
     "Accept": "text/html, */*;q=0.9",
     "Accept-Language": "it-IT,it;q=0.9,en;q=0.8",
     "User-Agent":
-      process.env.STEAM_UA ||
+      process.env.STEAMDB_UA ||
       "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-    "Referer": "https://store.steampowered.com/search/?specials=1",
+    "Referer": "https://steamdb.info/",
   };
 }
 
-function parseEuroToNumber(txt) {
+function parseEuroNumber(txt) {
+  // "2,99€" -> 2.99
   if (!txt) return null;
-  const s = txt.replace(/\s+/g, " ").trim();
-  const m = s.match(/(\d+[.,]\d{2})/);
+  const m = txt.match(/(\d+[.,]\d{2})\s*€/);
   if (!m) return null;
   return Number(m[1].replace(",", "."));
 }
 
-function extractPrices(priceText) {
-  const tokens = priceText.match(/(?:€\s*)?\d+[.,]\d{2}\s*€?/g) || [];
-  if (!tokens.length) return { original: null, final: null, originalText: null, finalText: null };
-
-  // spesso se scontato: due prezzi; se no: uno
-  if (tokens.length >= 2) {
-    const aText = tokens[tokens.length - 2].trim();
-    const bText = tokens[tokens.length - 1].trim();
-    const a = parseEuroToNumber(aText);
-    const b = parseEuroToNumber(bText);
-    if (a == null || b == null) return { original: null, final: null, originalText: null, finalText: null };
-
-    const original = Math.max(a, b);
-    const final = Math.min(a, b);
-
-    const originalText = (original === a ? aText : bText).replace(/\s+/g, " ").trim();
-    const finalText = (final === a ? aText : bText).replace(/\s+/g, " ").trim();
-
-    return { original, final, originalText, finalText };
-  }
-
-  // un solo prezzo (lo trattiamo come "finale")
-  const onlyText = tokens[0].trim();
-  const only = parseEuroToNumber(onlyText);
-  return { original: null, final: only, originalText: null, finalText: onlyText };
+function estimateOriginal(finalEur, discountPct) {
+  if (finalEur == null || !discountPct) return null;
+  const f = 1 - discountPct / 100;
+  if (f <= 0) return null;
+  return finalEur / f;
 }
 
-function parseSearchHtml(html) {
+function formatEuro(n) {
+  if (typeof n !== "number" || !Number.isFinite(n)) return null;
+  // 2 decimali con virgola
+  return `${n.toFixed(2).replace(".", ",")}€`;
+}
+
+function parseSteamDbSales(html) {
+  // Pattern robusto:
+  // 1) trova link /app/<appid>/ e titolo
+  // 2) nelle immediate vicinanze trova "-XX% YY,YY€"
+  //
+  // Esempio (dal testo pagina):
+  // Assassin's Creed® Origins ... -90% 5,99€
   const out = [];
-  const blocks = html.split('class="search_result_row"');
+  const re = /href="\/app\/(\d+)\/"[^>]*>([^<]+)<\/a>[\s\S]{0,250}?-([0-9]{1,3})%\s+([0-9]+[.,][0-9]{2})€/g;
 
-  for (const b of blocks) {
-    const appId =
-      b.match(/data-ds-appid="(\d+)"/)?.[1] ||
-      b.match(/\/app\/(\d+)/)?.[1];
-    if (!appId) continue;
+  let m;
+  while ((m = re.exec(html)) !== null) {
+    const appId = Number(m[1]);
+    const title = (m[2] || "").trim();
+    const discountPercent = Number(m[3]);
+    const finalEur = Number(String(m[4]).replace(",", "."));
 
-    const title = b.match(/class="title">([^<]+)</)?.[1]?.trim();
-    if (!title) continue;
-
-    const discountPercentStr =
-      b.match(/class="search_discount[^"]*".*?<span>\s*-(\d+)%\s*<\/span>/s)?.[1];
-    const discountPercent = discountPercentStr ? Number(discountPercentStr) : 0;
-
-    const priceRaw = b.match(/class="search_price[^"]*">([\s\S]*?)<\/div>/)?.[1] || "";
-    const priceText = priceRaw.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-    const { original, final, originalText, finalText } = extractPrices(priceText);
-
-    // deve avere prezzo finale leggibile e sotto soglia
-    if (final == null) continue;
-    if (!(final <= MAX_FINAL_EUR)) continue;
-
-    // deve essere scontato (almeno un po')
-    if (discountPercent <= 0) continue;
-
-    // esclusione "già economici":
-    // - se originale presente: originale > MAX_FINAL_EUR
-    // - se originale assente: chiedi sconto importante (fallback)
-    if (original != null) {
-      if (!(original > MAX_FINAL_EUR)) continue;
-    } else {
-      if (discountPercent < MIN_DISCOUNT_PCT) continue;
-    }
+    if (!appId || !title) continue;
+    if (!Number.isFinite(finalEur)) continue;
 
     out.push({
-      appId: Number(appId),
+      appId,
       title,
       url: `https://store.steampowered.com/app/${appId}`,
       discountPercent,
-      originalEur: original,
-      finalEur: final,
-      originalPriceText: originalText,
-      finalPriceText: finalText,
+      finalEur,
       end: null,
     });
   }
 
-  return out;
-}
-
-async function fetchPage(start) {
-  const url =
-    `https://store.steampowered.com/search/results/?specials=1&filter=discount&sort_by=Price_ASC` +
-    `&maxprice=${encodeURIComponent(String(MAX_FINAL_EUR))}` +
-    `&l=${encodeURIComponent(LANG)}&cc=${encodeURIComponent(CC)}` +
-    `&start=${start}&count=${PAGE_SIZE}`;
-
-  const res = await fetch(url, { headers: makeHeaders() });
-  if (!res.ok) throw new Error(`Steam HTML fetch failed: ${res.status}`);
-  return await res.text();
+  // dedupe per appId (tieni la prima occorrenza)
+  const seen = new Set();
+  return out.filter(x => (seen.has(x.appId) ? false : (seen.add(x.appId), true)));
 }
 
 export async function fetchSteamDeals() {
-  const all = [];
-  const seen = new Set();
-  let start = 0;
+  const res = await fetch(STEAMDB_SALES_URL, { headers: makeHeaders() });
+  if (!res.ok) throw new Error(`SteamDB fetch failed: ${res.status}`);
+  const html = await res.text();
 
-  while (all.length < MAX_RESULTS) {
-    const html = await fetchPage(start);
-    const items = parseSearchHtml(html);
-    if (!items.length) break;
+  let deals = parseSteamDbSales(html);
 
-    for (const it of items) {
-      const key = `${it.appId}|${it.discountPercent}|${it.finalEur}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      all.push(it);
-      if (all.length >= MAX_RESULTS) break;
-    }
+  // filtri
+  deals = deals.filter(d => (d.discountPercent || 0) >= MIN_DISCOUNT_PCT);
+  deals = deals.filter(d => (d.finalEur ?? 999) <= MAX_FINAL_EUR);
 
-    start += PAGE_SIZE;
-  }
+  // escludi giochi “già economici” stimando il prezzo originale
+  deals = deals
+    .map(d => {
+      const orig = estimateOriginal(d.finalEur, d.discountPercent);
+      return {
+        ...d,
+        originalEur: orig,
+        originalPriceText: orig ? formatEuro(orig) : null,
+        finalPriceText: formatEuro(d.finalEur),
+      };
+    })
+    .filter(d => {
+      // se non riesco a stimare, lo tengo comunque (ma in pratica orig c’è sempre con discount>0)
+      if (typeof d.originalEur !== "number") return true;
+      return d.originalEur > MAX_FINAL_EUR;
+    });
 
-  all.sort(
+  // ordina: più economici prima, poi sconto più alto
+  deals.sort(
     (a, b) =>
       (a.finalEur ?? 999) - (b.finalEur ?? 999) ||
       (b.discountPercent ?? 0) - (a.discountPercent ?? 0) ||
       a.title.localeCompare(b.title)
   );
 
-  return all;
+  return deals.slice(0, MAX_RESULTS);
 }
