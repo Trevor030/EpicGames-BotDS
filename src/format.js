@@ -1,23 +1,19 @@
-function fmt(dt) {
-  return new Intl.DateTimeFormat("it-IT", {
-    timeZone: "Europe/Rome",
-    day: "2-digit",
-    month: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit"
-  }).format(dt);
+function fmtDate(d) {
+  if (!(d instanceof Date)) return "";
+  const ts = Math.floor(d.getTime() / 1000);
+  return `<t:${ts}:R>`;
 }
 
-export function currentText(games) {
-  if (!games.length) return "Nessun gioco gratuito al momento 👀";
-  return games
-    .map(g => `• **[${g.title}](${g.url})** — fino al **${fmt(g.end)}**`)
-    .join("\n");
+export function currentText(list) {
+  if (!list?.length) return "—";
+  return list
+    .map(g => `• **${g.title}**\n${g.url}\n⏳ Fine: ${fmtDate(g.end)}`)
+    .join("\n\n");
 }
 
-export function upcomingText(games) {
-  if (!games.length) return "Epic non ha ancora annunciato i prossimi 🎁";
-  return games
-    .map(g => `• **[${g.title}](${g.url})** — dal **${fmt(g.start)}**`)
-    .join("\n");
+export function upcomingText(list) {
+  if (!list?.length) return "—";
+  return list
+    .map(g => `• **${g.title}**\n${g.url}\n🗓️ Inizia: ${fmtDate(g.start)}`)
+    .join("\n\n");
 }
