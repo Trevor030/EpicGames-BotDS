@@ -54,8 +54,8 @@ function changeKeyEpic(g) {
 }
 
 function changeKeySteam(g) {
-  // ✅ stabile: appId + percentuale (NON prezzi)
-  return `${g.appId}|${g.discountPercent ?? ""}`;
+  // ✅ stabile: appId + prezzo finale + percentuale sconto (non dipende dal testo HTML)
+  return `${g.appId}|${g.finalEur ?? ""}|${g.discountPercent ?? ""}`;
 }
 
 function computeChangeHash({ epicCurrent, epicUpcoming, steamDeals }) {
@@ -72,7 +72,6 @@ async function buildPayload(reason) {
   const { current: epicCurrent, upcoming: epicUpcoming } =
     await fetchEpicFreePromos({ debug: false });
 
-  // ✅ Steam best-effort: se esplode, non blocca Epic
   let steamDeals = null;
   try {
     steamDeals = await fetchSteamDeals();
@@ -81,19 +80,19 @@ async function buildPayload(reason) {
     steamDeals = null;
   }
 
-  const minDisc = Number(process.env.MIN_STEAM_DISCOUNT || 90);
+  const maxEur = Number(process.env.STEAM_MAX_FINAL_EUR || 9);
 
   const content =
     `🔔 **Aggiornamento rilevato** (${reason})\n` +
     `🗓️ Pubblicato: <t:${ts}:F>  •  <t:${ts}:R>`;
 
   const embed = new EmbedBuilder()
-    .setTitle("🎁 Giochi Gratis / Super Sconti – Epic + Steam")
+    .setTitle("🎁 Giochi Gratis / Offerte – Epic + Steam")
     .addFields(
       { name: "🕒 Aggiornato", value: `**<t:${ts}:F>**\n(<t:${ts}:R>)`, inline: false },
       { name: "✅ Epic – Disponibili ora", value: safeField(currentText(epicCurrent)), inline: false },
       { name: "⏭️ Epic – Prossimi", value: safeField(upcomingText(epicUpcoming)), inline: false },
-      { name: `🎮 Steam – Sconti ≥ ${minDisc}% (con prezzi)`, value: steamDealsText(steamDeals), inline: false }
+      { name: `🎮 Steam – Scontati ≤ ${maxEur}€ (ma non già ≤ ${maxEur}€)`, value: steamDealsText(steamDeals), inline: false }
     )
     .setFooter({ text: "Resta sempre 1 messaggio: il precedente viene eliminato." });
 
