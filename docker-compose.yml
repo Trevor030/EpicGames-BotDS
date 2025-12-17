@@ -13,3 +13,7 @@ services:
       STEAM_MIN_DISCOUNT_PCT: "50"
       STEAM_MAX_RESULTS: "60"
       CHECK_EVERY_MIN: "60"
+      STEAM_STRICT_AAA: "true"
+      STEAM_AAA_TARGET: "12"
+      STEAM_AAA_KEYWORDS: "assassin's creed|assassins creed|tomb raider|grand theft auto|gta|red dead|the witcher|cyberpunk|elden ring|dark souls|sekiro|resident evil|monster hunter|final fantasy|persona|yakuza|like a dragon|call of duty|battlefield|far cry|watch dogs|hitman|bioshock|borderlands|doom|wolfenstein|skyrim|fallout|starfield|halo|forza|diablo|overwatch|star wars|f1 |nba 2k|mortal kombat|street fighter|tekken|need for speed|assassin|ubisoft|rockstar|bethesda|capcom|square enix|bandai namco|sega|ea"
+
