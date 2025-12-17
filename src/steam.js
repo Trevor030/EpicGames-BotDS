@@ -1,13 +1,13 @@
-// src/steam.js
-// Steam deals via IsThereAnyDeal API (no scraping).
+// src/steam.js (ITAD: Steam-only, con priorità ai titoli "grossi")
 //
-// Filtri:
-// - solo Steam shop (shops=61)
-// - prezzo scontato <= MAX_FINAL_EUR
-// - sconto >= MIN_DISCOUNT_PCT
-// - esclude giochi "già economici": prezzo regolare > MAX_FINAL_EUR
+// Obiettivo: ≤ 9€ e sconto ≥ X%, ma mostrare roba tipo Tomb Raider / Assassin’s Creed
+// invece di riempire la top-10 con giochi da 0,78€.
 //
-// Richiede: ITAD_API_KEY (env)
+// Strategia:
+// - prendo fino a 200 deal Steam da ITAD ordinati per sconto (-cut)
+// - filtro i criteri
+// - separo FREE (0,00€)
+// - per i non-free ordino per "originale" decrescente (AAA boost), poi sconto, poi prezzo
 
 const ITAD_API_KEY = process.env.ITAD_API_KEY;
 const ITAD_COUNTRY = process.env.ITAD_COUNTRY || "IT";
@@ -17,38 +17,36 @@ const MIN_DISCOUNT_PCT = Number(process.env.STEAM_MIN_DISCOUNT_PCT || 50);
 const MAX_RESULTS = Number(process.env.STEAM_MAX_RESULTS || 60);
 
 const ITAD_ENDPOINT = "https://api.isthereanydeal.com/deals/v2";
-const STEAM_SHOP_ID = 61; // usato nei parametri shops (Steam) :contentReference[oaicite:2]{index=2}
+const STEAM_SHOP_ID = 61; // Steam shop id :contentReference[oaicite:1]{index=1}
 
 function fmtEuro(amount) {
   if (typeof amount !== "number") return null;
   return `${amount.toFixed(2).replace(".", ",")}€`;
 }
 
-function makeUrl(offset, limit) {
+function buildUrl() {
   const u = new URL(ITAD_ENDPOINT);
+  u.searchParams.set("key", ITAD_API_KEY);
   u.searchParams.set("country", ITAD_COUNTRY);
   u.searchParams.set("shops", String(STEAM_SHOP_ID));
-  u.searchParams.set("sort", "price"); // lowest price :contentReference[oaicite:3]{index=3}
-  u.searchParams.set("offset", String(offset));
-  u.searchParams.set("limit", String(limit));
-  // auth: ITAD usa API key; in molti esempi ITAD è in query "key".
-  u.searchParams.set("key", ITAD_API_KEY);
+  u.searchParams.set("limit", "200");     // max :contentReference[oaicite:2]{index=2}
+  u.searchParams.set("offset", "0");
+  u.searchParams.set("sort", "-cut");     // sconto più alto :contentReference[oaicite:3]{index=3}
   return u.toString();
 }
 
 async function itadFetch(url) {
-  // Mettiamo anche header, così copriamo entrambi gli stili (query+header)
   const res = await fetch(url, {
     headers: {
-      "Accept": "application/json",
+      Accept: "application/json",
       "User-Agent": process.env.ITAD_UA || "epic-steam-discord-bot/1.0",
-      "x-api-key": ITAD_API_KEY,
+      "x-api-key": ITAD_API_KEY, // ok anche se la chiave è già in query
     },
   });
 
   if (!res.ok) {
     const txt = await res.text().catch(() => "");
-    throw new Error(`ITAD fetch failed: ${res.status} ${txt ? "- " + txt.slice(0, 120) : ""}`);
+    throw new Error(`ITAD fetch failed: ${res.status}${txt ? " - " + txt.slice(0, 160) : ""}`);
   }
   return await res.json();
 }
@@ -58,68 +56,63 @@ export async function fetchSteamDeals() {
     throw new Error("ITAD_API_KEY mancante (registrala in isthereanydeal.com -> My Apps).");
   }
 
-  const wanted = Math.max(10, Math.min(MAX_RESULTS, 200)); // limite pratico
-  const pageSize = 200; // max per docs :contentReference[oaicite:4]{index=4}
+  const data = await itadFetch(buildUrl());
+  const list = data?.list || [];
 
-  let offset = 0;
-  let hasMore = true;
-
-  const out = [];
+  const deals = [];
   const seen = new Set();
 
-  while (hasMore && out.length < wanted) {
-    const url = makeUrl(offset, pageSize);
-    const data = await itadFetch(url);
+  for (const item of list) {
+    // spesso è "game" ma può essere anche "dlc": se vuoi SOLO giochi, lascia questa riga
+    if (item?.type && item.type !== "game") continue;
 
-    const list = data?.list || [];
-    for (const item of list) {
-      const deal = item?.deal;
-      if (!deal) continue;
+    const deal = item?.deal;
+    if (!deal) continue;
 
-      const cut = Number(deal.cut ?? 0);
-      const price = deal?.price?.amount;
-      const regular = deal?.regular?.amount;
-      const currency = deal?.price?.currency;
+    const cut = Number(deal.cut ?? 0);
+    const price = deal?.price?.amount;
+    const regular = deal?.regular?.amount;
+    const currency = deal?.price?.currency;
 
-      // per IT conviene assicurarsi EUR (se ITAD_COUNTRY=IT di norma è EUR)
-      if (currency && currency !== "EUR") continue;
+    // con ITAD_COUNTRY=IT dovresti essere in EUR
+    if (currency && currency !== "EUR") continue;
 
-      if (!(cut >= MIN_DISCOUNT_PCT)) continue;
-      if (!(typeof price === "number" && price <= MAX_FINAL_EUR)) continue;
+    if (!(cut >= MIN_DISCOUNT_PCT)) continue;
+    if (!(typeof price === "number" && price <= MAX_FINAL_EUR)) continue;
 
-      // escludi giochi già economici: regolare deve essere > MAX_FINAL_EUR
-      if (!(typeof regular === "number" && regular > MAX_FINAL_EUR)) continue;
+    // escludi “già economici”: regolare deve essere > soglia
+    if (!(typeof regular === "number" && regular > MAX_FINAL_EUR)) continue;
 
-      const key = `${item.id}|${cut}|${price}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
+    const key = `${item.id}|${cut}|${price}|${regular}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
 
-      out.push({
-        appId: null, // ITAD qui non dà sempre appId Steam diretto
-        title: item.title || item.slug || "Senza titolo",
-        url: deal.url || `https://isthereanydeal.com/game/${item.slug}/`, // ITAD shortlink o fallback
-        discountPercent: cut,
-        originalEur: regular,
-        finalEur: price,
-        originalPriceText: fmtEuro(regular),
-        finalPriceText: fmtEuro(price),
-        end: deal.expiry ? new Date(deal.expiry) : null,
-      });
-
-      if (out.length >= wanted) break;
-    }
-
-    hasMore = !!data?.hasMore;
-    offset = Number(data?.nextOffset ?? (offset + pageSize));
-    if (!Number.isFinite(offset)) break;
+    deals.push({
+      title: item.title || item.slug || "Senza titolo",
+      url: deal.url || `https://isthereanydeal.com/game/${item.slug}/`,
+      discountPercent: cut,
+      originalEur: regular,
+      finalEur: price,
+      originalPriceText: fmtEuro(regular),
+      finalPriceText: fmtEuro(price),
+      end: deal.expiry ? new Date(deal.expiry) : null,
+    });
   }
 
-  out.sort(
-    (a, b) =>
-      (a.finalEur ?? 999) - (b.finalEur ?? 999) ||
-      (b.discountPercent ?? 0) - (a.discountPercent ?? 0) ||
-      a.title.localeCompare(b.title)
-  );
+  // separa FREE (0,00€) e “AAA boost” sugli altri
+  const free = deals
+    .filter(d => d.finalEur === 0)
+    .sort((a, b) => (b.originalEur ?? 0) - (a.originalEur ?? 0) || (b.discountPercent ?? 0) - (a.discountPercent ?? 0));
 
-  return out.slice(0, wanted);
+  const paid = deals
+    .filter(d => d.finalEur !== 0)
+    .sort((a, b) =>
+      (b.originalEur ?? 0) - (a.originalEur ?? 0) ||        // AAA boost
+      (b.discountPercent ?? 0) - (a.discountPercent ?? 0) || // più sconto
+      (a.finalEur ?? 999) - (b.finalEur ?? 999) ||          // poi più economico
+      a.title.localeCompare(b.title)
+    );
+
+  // output: prima gratis, poi “grossi”
+  return [...free, ...paid].slice(0, MAX_RESULTS);
 }
