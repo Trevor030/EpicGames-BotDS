@@ -23,4 +23,4 @@ services:
 
       STEAM_STRICT_AAA: "true"
       STEAM_AAA_TARGET: "12"
-      STEAM_AAA_KEYWORDS: "assassin's creed|assassins creed|tomb raider|grand theft auto|red dead redemption|the witcher|cyberpunk 2077|elden ring|dark souls|sekiro|resident evil|monster hunter|final fantasy|persona 5|like a dragon|yakuza|call of duty|battlefield|far cry|watch dogs|hitman|bioshock|borderlands|doom|wolfenstein|the elder scrolls|skyrim|fallout|halo|forza|diablo|overwatch|star wars jedi|need for speed|mortal
+      STEAM_AAA_KEYWORDS: "assassin's creed|assassins creed|tomb raider|grand theft auto|red dead redemption|the witcher|cyberpunk 2077|elden ring|dark souls|sekiro|resident evil|monster hunter|final fantasy|persona 5|like a dragon|yakuza|call of duty|battlefield|far cry|watch dogs|hitman|bioshock|borderlands|doom|wolfenstein|the elder scrolls|skyrim|fallout|halo|forza|diablo|overwatch|star wars jedi|need for speed|mortal"
