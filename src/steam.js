@@ -1,119 +1,125 @@
-// steam.js (SteamDB version)
-// Fonte: SteamDB "Current Steam Sales" (HTML table)
+// src/steam.js
+// Steam deals via IsThereAnyDeal API (no scraping).
+//
 // Filtri:
-// - finalEur <= MAX_FINAL_EUR
-// - discountPercent >= MIN_DISCOUNT_PCT
-// - excludeAlreadyCheap: stimiamo originale = final / (1 - discount/100) e richiediamo originale > MAX_FINAL_EUR
+// - solo Steam shop (shops=61)
+// - prezzo scontato <= MAX_FINAL_EUR
+// - sconto >= MIN_DISCOUNT_PCT
+// - esclude giochi "già economici": prezzo regolare > MAX_FINAL_EUR
+//
+// Richiede: ITAD_API_KEY (env)
+
+const ITAD_API_KEY = process.env.ITAD_API_KEY;
+const ITAD_COUNTRY = process.env.ITAD_COUNTRY || "IT";
 
 const MAX_FINAL_EUR = Number(process.env.STEAM_MAX_FINAL_EUR || 9);
 const MIN_DISCOUNT_PCT = Number(process.env.STEAM_MIN_DISCOUNT_PCT || 50);
 const MAX_RESULTS = Number(process.env.STEAM_MAX_RESULTS || 60);
 
-// SteamDB mostra EU/Euro a seconda del contesto; qui parse “€” dalla tabella.
-const STEAMDB_SALES_URL = process.env.STEAMDB_SALES_URL || "https://steamdb.info/sales/";
+const ITAD_ENDPOINT = "https://api.isthereanydeal.com/deals/v2";
+const STEAM_SHOP_ID = 61; // usato nei parametri shops (Steam) :contentReference[oaicite:2]{index=2}
 
-function makeHeaders() {
-  return {
-    "Accept": "text/html, */*;q=0.9",
-    "Accept-Language": "it-IT,it;q=0.9,en;q=0.8",
-    "User-Agent":
-      process.env.STEAMDB_UA ||
-      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-    "Referer": "https://steamdb.info/",
-  };
+function fmtEuro(amount) {
+  if (typeof amount !== "number") return null;
+  return `${amount.toFixed(2).replace(".", ",")}€`;
 }
 
-function parseEuroNumber(txt) {
-  // "2,99€" -> 2.99
-  if (!txt) return null;
-  const m = txt.match(/(\d+[.,]\d{2})\s*€/);
-  if (!m) return null;
-  return Number(m[1].replace(",", "."));
+function makeUrl(offset, limit) {
+  const u = new URL(ITAD_ENDPOINT);
+  u.searchParams.set("country", ITAD_COUNTRY);
+  u.searchParams.set("shops", String(STEAM_SHOP_ID));
+  u.searchParams.set("sort", "price"); // lowest price :contentReference[oaicite:3]{index=3}
+  u.searchParams.set("offset", String(offset));
+  u.searchParams.set("limit", String(limit));
+  // auth: ITAD usa API key; in molti esempi ITAD è in query "key".
+  u.searchParams.set("key", ITAD_API_KEY);
+  return u.toString();
 }
 
-function estimateOriginal(finalEur, discountPct) {
-  if (finalEur == null || !discountPct) return null;
-  const f = 1 - discountPct / 100;
-  if (f <= 0) return null;
-  return finalEur / f;
-}
+async function itadFetch(url) {
+  // Mettiamo anche header, così copriamo entrambi gli stili (query+header)
+  const res = await fetch(url, {
+    headers: {
+      "Accept": "application/json",
+      "User-Agent": process.env.ITAD_UA || "epic-steam-discord-bot/1.0",
+      "x-api-key": ITAD_API_KEY,
+    },
+  });
 
-function formatEuro(n) {
-  if (typeof n !== "number" || !Number.isFinite(n)) return null;
-  // 2 decimali con virgola
-  return `${n.toFixed(2).replace(".", ",")}€`;
-}
-
-function parseSteamDbSales(html) {
-  // Pattern robusto:
-  // 1) trova link /app/<appid>/ e titolo
-  // 2) nelle immediate vicinanze trova "-XX% YY,YY€"
-  //
-  // Esempio (dal testo pagina):
-  // Assassin's Creed® Origins ... -90% 5,99€
-  const out = [];
-  const re = /href="\/app\/(\d+)\/"[^>]*>([^<]+)<\/a>[\s\S]{0,250}?-([0-9]{1,3})%\s+([0-9]+[.,][0-9]{2})€/g;
-
-  let m;
-  while ((m = re.exec(html)) !== null) {
-    const appId = Number(m[1]);
-    const title = (m[2] || "").trim();
-    const discountPercent = Number(m[3]);
-    const finalEur = Number(String(m[4]).replace(",", "."));
-
-    if (!appId || !title) continue;
-    if (!Number.isFinite(finalEur)) continue;
-
-    out.push({
-      appId,
-      title,
-      url: `https://store.steampowered.com/app/${appId}`,
-      discountPercent,
-      finalEur,
-      end: null,
-    });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(`ITAD fetch failed: ${res.status} ${txt ? "- " + txt.slice(0, 120) : ""}`);
   }
-
-  // dedupe per appId (tieni la prima occorrenza)
-  const seen = new Set();
-  return out.filter(x => (seen.has(x.appId) ? false : (seen.add(x.appId), true)));
+  return await res.json();
 }
 
 export async function fetchSteamDeals() {
-  const res = await fetch(STEAMDB_SALES_URL, { headers: makeHeaders() });
-  if (!res.ok) throw new Error(`SteamDB fetch failed: ${res.status}`);
-  const html = await res.text();
+  if (!ITAD_API_KEY) {
+    throw new Error("ITAD_API_KEY mancante (registrala in isthereanydeal.com -> My Apps).");
+  }
 
-  let deals = parseSteamDbSales(html);
+  const wanted = Math.max(10, Math.min(MAX_RESULTS, 200)); // limite pratico
+  const pageSize = 200; // max per docs :contentReference[oaicite:4]{index=4}
 
-  // filtri
-  deals = deals.filter(d => (d.discountPercent || 0) >= MIN_DISCOUNT_PCT);
-  deals = deals.filter(d => (d.finalEur ?? 999) <= MAX_FINAL_EUR);
+  let offset = 0;
+  let hasMore = true;
 
-  // escludi giochi “già economici” stimando il prezzo originale
-  deals = deals
-    .map(d => {
-      const orig = estimateOriginal(d.finalEur, d.discountPercent);
-      return {
-        ...d,
-        originalEur: orig,
-        originalPriceText: orig ? formatEuro(orig) : null,
-        finalPriceText: formatEuro(d.finalEur),
-      };
-    })
-    .filter(d => {
-      // se non riesco a stimare, lo tengo comunque (ma in pratica orig c’è sempre con discount>0)
-      if (typeof d.originalEur !== "number") return true;
-      return d.originalEur > MAX_FINAL_EUR;
-    });
+  const out = [];
+  const seen = new Set();
 
-  // ordina: più economici prima, poi sconto più alto
-  deals.sort(
+  while (hasMore && out.length < wanted) {
+    const url = makeUrl(offset, pageSize);
+    const data = await itadFetch(url);
+
+    const list = data?.list || [];
+    for (const item of list) {
+      const deal = item?.deal;
+      if (!deal) continue;
+
+      const cut = Number(deal.cut ?? 0);
+      const price = deal?.price?.amount;
+      const regular = deal?.regular?.amount;
+      const currency = deal?.price?.currency;
+
+      // per IT conviene assicurarsi EUR (se ITAD_COUNTRY=IT di norma è EUR)
+      if (currency && currency !== "EUR") continue;
+
+      if (!(cut >= MIN_DISCOUNT_PCT)) continue;
+      if (!(typeof price === "number" && price <= MAX_FINAL_EUR)) continue;
+
+      // escludi giochi già economici: regolare deve essere > MAX_FINAL_EUR
+      if (!(typeof regular === "number" && regular > MAX_FINAL_EUR)) continue;
+
+      const key = `${item.id}|${cut}|${price}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      out.push({
+        appId: null, // ITAD qui non dà sempre appId Steam diretto
+        title: item.title || item.slug || "Senza titolo",
+        url: deal.url || `https://isthereanydeal.com/game/${item.slug}/`, // ITAD shortlink o fallback
+        discountPercent: cut,
+        originalEur: regular,
+        finalEur: price,
+        originalPriceText: fmtEuro(regular),
+        finalPriceText: fmtEuro(price),
+        end: deal.expiry ? new Date(deal.expiry) : null,
+      });
+
+      if (out.length >= wanted) break;
+    }
+
+    hasMore = !!data?.hasMore;
+    offset = Number(data?.nextOffset ?? (offset + pageSize));
+    if (!Number.isFinite(offset)) break;
+  }
+
+  out.sort(
     (a, b) =>
       (a.finalEur ?? 999) - (b.finalEur ?? 999) ||
       (b.discountPercent ?? 0) - (a.discountPercent ?? 0) ||
       a.title.localeCompare(b.title)
   );
 
-  return deals.slice(0, MAX_RESULTS);
+  return out.slice(0, wanted);
 }
