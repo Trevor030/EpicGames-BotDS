@@ -53,7 +53,6 @@ export async function fetchEpicFreePromos({ debug = false } = {}) {
     const promos = el?.promotions;
     if (!promos) continue;
 
-    // DISPONIBILI ORA (mai mystery)
     for (const bucket of promos.promotionalOffers || []) {
       for (const offer of bucket.promotionalOffers || []) {
         const s = new Date(offer.startDate);
@@ -80,24 +79,11 @@ export async function fetchEpicFreePromos({ debug = false } = {}) {
       }
     }
 
-    // PROSSIMI (mystery ammesso ma “rinominato”)
     for (const bucket of promos.upcomingPromotionalOffers || []) {
       for (const offer of bucket.promotionalOffers || []) {
         const s = new Date(offer.startDate);
         const e = new Date(offer.endDate);
         const free = isFreeClaim(el, offer);
-
-        if (debug && debugSamples.length < 10) {
-          const tp = el?.price?.totalPrice || {};
-          debugSamples.push({
-            title: el?.title,
-            freeDetected: free,
-            discountType: offer?.discountSetting?.discountType,
-            discountPct: offer?.discountSetting?.discountPercentage,
-            discountPrice: tp?.discountPrice,
-            originalPrice: tp?.originalPrice,
-          });
-        }
 
         if (!(s > now)) continue;
         if (!free) continue;
