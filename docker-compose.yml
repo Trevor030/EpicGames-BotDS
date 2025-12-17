@@ -1,14 +1,17 @@
-      services:
+version: "3.8"
+
+services:
   epic-bot:
-    build: .
+    image: epic-games-discord-bot:latest
     container_name: epic-bot
     restart: unless-stopped
+
     environment:
-     DISCORD_TOKEN: ${DISCORD_TOKEN}
+      DISCORD_TOKEN: ${DISCORD_TOKEN}
       DISCORD_CHANNEL_ID: ${DISCORD_CHANNEL_ID}
       ITAD_API_KEY: ${ITAD_API_KEY}
-      ITAD_COUNTRY: "IT"
 
+      ITAD_COUNTRY: IT
       CMD_FREE: "!free"
       CHECK_EVERY_MIN: "60"
       CONFIRM_RUNS: "2"
