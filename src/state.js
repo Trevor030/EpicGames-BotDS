@@ -1,4 +1,3 @@
-// state.js
 import fs from "node:fs";
 import path from "node:path";
 
@@ -18,31 +17,15 @@ export function loadState() {
       lastHash: typeof s.lastHash === "string" ? s.lastHash : "",
       lastChangeAt: typeof s.lastChangeAt === "string" ? s.lastChangeAt : null,
       messageId: typeof s.messageId === "string" ? s.messageId : null,
-
-      // debounce
       pendingHash: typeof s.pendingHash === "string" ? s.pendingHash : null,
       pendingCount: typeof s.pendingCount === "number" ? s.pendingCount : 0,
     };
   } catch {
-    return {
-      lastHash: "",
-      lastChangeAt: null,
-      messageId: null,
-      pendingHash: null,
-      pendingCount: 0,
-    };
+    return { lastHash: "", lastChangeAt: null, messageId: null, pendingHash: null, pendingCount: 0 };
   }
 }
 
 export function saveState(state) {
   ensureDir();
-  const payload = {
-    lastHash: state.lastHash || "",
-    lastChangeAt: state.lastChangeAt || new Date().toISOString(),
-    messageId: state.messageId || null,
-
-    pendingHash: state.pendingHash ?? null,
-    pendingCount: Number.isFinite(state.pendingCount) ? state.pendingCount : 0,
-  };
-  fs.writeFileSync(STATE_PATH, JSON.stringify(payload, null, 2), "utf-8");
+  fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2), "utf-8");
 }
